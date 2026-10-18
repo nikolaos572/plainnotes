@@ -111,7 +111,7 @@ Everything requires a login, failed logins are rate-limited, and nothing inside 
 
 - [User guide](docs/guide.md): your data, writing notes, tags and search, attachments and keyboard shortcuts.
 - [Security](docs/SECURITY.md): how to report a vulnerability, the threat model, the controls, the audit and the third-party code.
-- [Contributing](docs/CONTRIBUTING.md): running plainnotes from source, the tests, releasing and updating dependencies.
+- [Contributing](docs/CONTRIBUTING.md): running plainnotes from source, the tests and updating dependencies.
 
 ## License
 

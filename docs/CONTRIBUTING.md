@@ -32,16 +32,6 @@ ruff check . && ruff format --check .              # ruff format . fixes the for
 
 Two GitHub Actions workflows run only when started by hand from the **Actions** tab: **Run Test Suite** (lint and every test, including the browser and Docker tests) and **Build and Export Docker Image**, which offers the image as a download for one day. Load it with `gunzip -c plainnotes.tar.gz | docker load`.
 
-## Releasing
-
-Run **Run Test Suite** first, then tag the release and push the tag:
-
-```bash
-git tag v1.0.0 && git push origin v1.0.0
-```
-
-The **Publish Docker Image** workflow then builds the image for amd64 and arm64 and publishes it to the GitHub Container Registry as `ghcr.io/nikolaos572/plainnotes` with the tags `1.0.0`, `1.0` and `latest`. Keep the version in `pyproject.toml` and `app/__init__.py` in step with the tag.
-
 ## Updating dependencies
 
 Dependabot opens a pull request once a month when a GitHub Action or the Docker base image has a new version (`.github/dependabot.yml`). Everything else is updated by hand:
