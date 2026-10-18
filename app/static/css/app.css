@@ -1,0 +1,815 @@
+/* plainnotes — one stylesheet, mobile first. Colors and spacing are custom properties. */
+
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-raised: #f5f6f8;
+  --text: #1c1f24;
+  --text-muted: #59606c;
+  --border: #d3d8df;
+  --accent: #2356c4;
+  --accent-text: #ffffff;
+  --danger: #b3261e;
+  --mark: #fde68a;
+  --code-bg: #f0f2f5;
+  --shadow: 0 6px 24px rgb(0 0 0 / 14%);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius: 6px;
+  --touch: 40px;
+  --content-width: 920px;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15171b;
+  --bg-raised: #1f2228;
+  --text: #e5e7eb;
+  --text-muted: #a4abb6;
+  --border: #393e48;
+  --accent: #8cb4ff;
+  --accent-text: #0d1526;
+  --danger: #ff8f86;
+  --mark: #6b5200;
+  --code-bg: #23272e;
+  --shadow: 0 6px 24px rgb(0 0 0 / 50%);
+}
+
+/* Base */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 var(--font-ui);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+[hidden] {
+  display: none !important; /* Must beat display rules on .button and similar classes. */
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.muted,
+.count,
+.note-meta,
+.snippet {
+  color: var(--text-muted);
+}
+
+h1 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.5rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+h2 {
+  margin: 0 0 var(--space-2);
+  font-size: 1.125rem;
+}
+
+/* Shared layout patterns */
+
+.note-list,
+.tags,
+.tag-list,
+.trash-list,
+.attachments ul,
+.attachment-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.note-row,
+.trash-list li,
+.attachments li {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.list-head,
+.list-controls,
+.toolbar,
+.editor-bar,
+.editor-actions,
+.note-meta,
+.tags,
+.tag-list,
+.tag-list li,
+.trash-list li,
+.attachments li,
+.attachment-rows li,
+.upload-row,
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Buttons and form controls */
+
+.button,
+.menu-item {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button {
+  justify-content: center;
+  gap: var(--space-1);
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  white-space: nowrap;
+}
+
+.button:hover {
+  border-color: var(--text-muted);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.button.primary,
+.button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.button.danger {
+  border-color: var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+.button.small {
+  min-height: 32px;
+  padding: 2px var(--space-2);
+  font-size: 0.875rem;
+}
+
+/* Lucide icons (icons.js): a 2px round stroke in the text colour, scaled with the font size. */
+.icon {
+  flex: none;
+  width: 1.125em;
+  height: 1.125em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+input:not([type="checkbox"]),
+select {
+  min-height: var(--touch);
+  padding: var(--space-1) var(--space-2);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--touch);
+  cursor: pointer;
+}
+
+.form-error,
+.field-error {
+  margin: var(--space-1) 0;
+  color: var(--danger);
+}
+
+.field-error:empty {
+  display: none;
+}
+
+/* Header and menu */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  color: var(--text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+/* The favicon, so the header shows the same note as the browser tab. */
+.brand-logo {
+  width: 1.5em;
+  height: 1.5em;
+}
+
+.search {
+  order: 5;
+  flex: 1 1 100%;
+}
+
+.search input {
+  width: 100%;
+}
+
+.app-header > .button {
+  margin-left: auto;
+}
+
+.menu {
+  position: relative;
+}
+
+.menu > summary {
+  list-style: none;
+}
+
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.menu-item {
+  gap: var(--space-2);
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.menu-item:hover,
+.menu-item[aria-pressed="true"] {
+  background: var(--bg-raised);
+}
+
+.menu-item[aria-pressed="true"]::after {
+  content: "✓";
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.menu-group {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border-block: 1px solid var(--border);
+}
+
+.menu-label {
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+/* Pages */
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--content-width);
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-3);
+}
+
+.message-page,
+.empty {
+  padding: var(--space-5) 0;
+}
+
+.login {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 340px;
+}
+
+.login-form h1 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.login-form .button {
+  margin-top: var(--space-2);
+}
+
+.list-head {
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.list-head h1 {
+  margin: 0;
+}
+
+.note-sections > section + section {
+  margin-top: var(--space-5);
+}
+
+.note-link {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.note-link:hover {
+  text-decoration: underline;
+}
+
+.note-meta {
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0 0;
+  font-size: 0.875rem;
+}
+
+.snippet {
+  margin: var(--space-1) 0 0;
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+mark {
+  border-radius: 2px;
+  background: var(--mark);
+  color: var(--text);
+}
+
+.tags {
+  gap: var(--space-1);
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--accent);
+  font-size: 0.875rem;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.tag-list .tag {
+  padding: var(--space-2) var(--space-3);
+  font-size: 1rem;
+}
+
+.count {
+  font-size: 0.875rem;
+}
+
+.trash-list .title {
+  flex: 1 1 200px;
+}
+
+/* Note view */
+
+.note-header,
+.toolbar {
+  margin-bottom: var(--space-3);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* Narrower on phones, so the view switch, Edit and Delete fit on one row with their icons. */
+.toolbar .button {
+  padding-inline: var(--space-2);
+}
+
+.segmented {
+  display: inline-flex;
+}
+
+.segmented .button:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.segmented .button:last-child {
+  margin-left: -1px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.note-text,
+.markdown pre,
+.editor-text {
+  font-family: var(--font-mono);
+  tab-size: 4;
+}
+
+.note-text,
+.markdown pre {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  font-size: 0.9375rem;
+}
+
+.note-text {
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* "Wrap lines" turned off: long lines stay whole and the block scrolls sideways. */
+.note-text.nowrap {
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+.attachments {
+  margin-top: var(--space-5);
+}
+
+.attachments li {
+  padding: var(--space-2) 0;
+}
+
+/* Rendered Markdown */
+
+.markdown {
+  overflow-wrap: break-word;
+}
+
+.markdown img {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown code {
+  padding: 0 var(--space-1);
+  border-radius: 4px;
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.code-block {
+  position: relative;
+  margin: var(--space-3) 0;
+}
+
+.markdown pre {
+  padding-right: 92px; /* Room for the Copy button at the end of the longest line. */
+  overflow-x: auto;
+}
+
+.copy-code {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+}
+
+.markdown blockquote {
+  margin: var(--space-3) 0;
+  padding: 0 var(--space-3);
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.markdown .tag {
+  padding: 0 var(--space-1);
+  font-size: inherit;
+}
+
+.wikilink.missing {
+  color: var(--danger);
+  text-decoration-style: dashed;
+}
+
+.markdown li.task {
+  list-style: none;
+}
+
+.markdown li.task input {
+  margin: 0 var(--space-2) 0 calc(-1 * var(--space-5));
+  vertical-align: middle;
+}
+
+/* Editor */
+
+.editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 70vh;
+}
+
+.title-input {
+  flex: 1 1 240px;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.dirty-dot {
+  font-size: 0.75em;
+}
+
+.editor-text {
+  flex: 1;
+  width: 100%;
+  min-height: 50vh;
+  padding: var(--space-3);
+  font-size: 16px; /* At least 16px, or iOS zooms in on focus. */
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.editor.dragging .editor-text {
+  border-color: var(--accent);
+  outline: 2px dashed var(--accent);
+}
+
+.attachments-panel {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.attachment-rows li,
+.upload-row {
+  padding: var(--space-1) 0;
+  overflow-wrap: anywhere;
+}
+
+.attachment-rows .name {
+  flex: 1 1 160px;
+}
+
+.upload-row progress {
+  flex: 1 1 120px;
+}
+
+/* Dialogs and toasts */
+
+.dialog {
+  width: min(480px, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
+
+.toasts {
+  position: fixed;
+  bottom: var(--space-4);
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: max-content;
+  max-width: calc(100vw - 2 * var(--space-4));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius);
+  background: var(--text);
+  color: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.toast.error {
+  background: var(--danger);
+}
+
+.toast-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto; /* The toast area lets clicks through; its buttons must not. */
+}
+
+/* Wider screens */
+
+@media (min-width: 720px) {
+  .search {
+    order: 0;
+    flex: 1 1 auto;
+    max-width: 420px;
+  }
+
+  .main {
+    padding: var(--space-5) var(--space-4);
+  }
+
+  h1 {
+    font-size: 1.75rem;
+  }
+
+  .editor-text {
+    font-size: 15px;
+  }
+
+  .toolbar .button {
+    padding-inline: var(--space-3);
+  }
+}
+
+/* Printing: only the note, in black on white whatever the theme */
+
+@media print {
+  :root,
+  [data-theme="dark"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --bg-raised: #ffffff;
+    --text: #000000;
+    --text-muted: #444444;
+    --border: #bbbbbb;
+    --accent: #000000;
+    --mark: #ffe680;
+    --code-bg: #f3f3f3;
+  }
+
+  .app-header,
+  .toolbar,
+  .list-controls,
+  .copy-code,
+  .editor-actions,
+  .attachments-panel,
+  .toasts {
+    display: none;
+  }
+
+  .main {
+    max-width: none;
+    padding: 0;
+  }
+
+  /* Paper cannot scroll sideways, so long lines wrap even when "Wrap lines" is off. */
+  .note-text,
+  .note-text.nowrap,
+  .markdown pre {
+    padding-right: var(--space-3);
+    overflow: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    break-after: avoid;
+  }
+
+  img {
+    break-inside: avoid;
+  }
+}

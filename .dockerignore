@@ -1,0 +1,5 @@
+# Only the runtime requirements and the app go into the build context.
+*
+!requirements.txt
+!app/
+**/__pycache__
