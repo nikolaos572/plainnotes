@@ -105,16 +105,16 @@ Booleans accept `true/false/1/0/yes/no`.
 
 ## Security
 
-Everything requires a login, failed logins are rate-limited, and nothing inside a note or an attachment can run code in your browser. [SECURITY.md](SECURITY.md) has the details and explains how to report a vulnerability.
+Everything requires a login, failed logins are rate-limited, and nothing inside a note or an attachment can run code in your browser. [SECURITY.md](docs/SECURITY.md) has the details and explains how to report a vulnerability.
 
 ## Documentation
 
 - [User guide](docs/guide.md): your data, writing notes, tags and search, attachments and keyboard shortcuts.
-- [Security](SECURITY.md): how to report a vulnerability, the threat model, the controls, the audit and the third-party code.
-- [Contributing](CONTRIBUTING.md): running plainnotes from source, the tests and updating dependencies.
+- [Security](docs/SECURITY.md): how to report a vulnerability, the threat model, the controls, the audit and the third-party code.
+- [Contributing](docs/CONTRIBUTING.md): running plainnotes from source, the tests, releasing and updating dependencies.
 
 ## License
 
 MIT, © 2026 Nikolaos Baras; see [LICENSE](LICENSE). If you build on plainnotes, a link back to <https://github.com/nikolaos572/plainnotes> is appreciated.
 
-plainnotes is built with [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [markdown-it](https://github.com/markdown-it/markdown-it), [DOMPurify](https://github.com/cure53/DOMPurify) and [Lucide](https://lucide.dev) icons; see [Third-party code](SECURITY.md#third-party-code) for versions and licences.
+plainnotes is built with [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [markdown-it](https://github.com/markdown-it/markdown-it), [DOMPurify](https://github.com/cure53/DOMPurify) and [Lucide](https://lucide.dev) icons; see [Third-party code](docs/SECURITY.md#third-party-code) for versions and licences.
