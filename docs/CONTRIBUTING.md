@@ -34,9 +34,10 @@ Two GitHub Actions workflows run only when started by hand from the **Actions** 
 
 ## Updating dependencies
 
-Dependabot opens a pull request once a month when a GitHub Action or the Docker base image has a new version (`.github/dependabot.yml`). Everything else is updated by hand:
+Every dependency is updated by hand:
 
-- **Docker base image:** the `FROM` line in the `Dockerfile` pins `python:3.13-slim` by digest, so a rebuild always starts from the same image. Dependabot proposes new 3.13 releases; to update it by hand, run `docker buildx imagetools inspect python:3.13-slim`, copy the `Digest:` value, and set the version in the tag to what `docker run --rm python:3.13-slim python --version` prints.
+- **GitHub Actions:** the workflows in `.github/workflows/` name each action by its major version (`actions/checkout@v7`). To update one, set the number after `@` to the action's latest major release.
+- **Docker base image:** the `FROM` line in the `Dockerfile` pins `python:3.13-slim` by digest, so a rebuild always starts from the same image. To update it, run `docker buildx imagetools inspect python:3.13-slim`, copy the `Digest:` value, and set the version in the tag to what `docker run --rm python:3.13-slim python --version` prints.
 - **Python packages:** `requirements.txt` pins every runtime package with hashes. Change nothing by hand: run the `uv pip compile` command shown at the top of that file. Development tools are listed in `requirements-dev.txt`.
 - **JavaScript libraries:** `app/static/vendor/` holds markdown-it and DOMPurify, unmodified, from the npm registry. To update one, download the new tarball, check it against the registry's integrity hash, copy the file from `package/dist/`, and update its version and SHA-256 in [SECURITY.md](SECURITY.md#third-party-code) and in `VENDOR_SHA256` in `tests/test_frontend.py`.
 - **Icons:** `app/static/js/icons.js` holds the [Lucide](https://lucide.dev) icons in use, copied from the SVG files of the `lucide-static` npm package (`package/icons/<name>.svg`). To add one, copy its shapes into `ICONS` and call `icon("name")`. A test checks that every icon used exists and that every icon defined is used.
