@@ -144,9 +144,11 @@ def _log_level(value: str | None) -> str:
 def _base_path(value: str | None) -> str:
     if value is None:
         return ""
-    if not _BASE_PATH_RE.fullmatch(value) or value.endswith("/"):
+    if not _BASE_PATH_RE.fullmatch(value) or any(
+        part in {"", ".", ".."} for part in value.split("/")[1:]
+    ):
         raise ConfigError(
             "PLAINNOTES_BASE_PATH must start with '/', must not end with '/', and may only "
-            "contain A-Z a-z 0-9 - _ . ~ /"
+            "contain A-Z a-z 0-9 - _ . ~ / with no empty, dot or dot-dot segments"
         )
     return value

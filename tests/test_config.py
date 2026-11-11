@@ -234,3 +234,11 @@ def test_read_only_data_dir_never_probes_writability(tmp_path, monkeypatch):
     monkeypatch.setattr(fsutil, "create_temp_file", no_writes)
     check_data_dir(tmp_path, read_only=True)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "value", ["/a/../notes", "/a/./notes", "//other/notes", "/a//b", "/.", "/.."]
+)
+def test_base_path_rejects_noncanonical_segments(value):
+    with pytest.raises(ConfigError, match="PLAINNOTES_BASE_PATH"):
+        load(BASE_PATH=value)
