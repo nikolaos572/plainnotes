@@ -121,3 +121,40 @@ def test_read_only_startup_and_gets_never_mutate_files(app_factory, data_root):
             assert loose.read_bytes() == b"original"
             assert staging.read_bytes() == b"keep staging"
     assert sorted(p.name for p in data_root.iterdir()) == [staging.name, loose.name]
+
+
+def test_configured_symlink_root_supports_import_and_mutations(app_factory, tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "Import.md").write_bytes(b"imported")
+    link = tmp_path / "configured"
+    link.symlink_to(actual, target_is_directory=True)
+    app = app_factory(data_dir=link)
+    assert app.state.data_dir.root == actual.resolve()
+    with TestClient(app, headers=CSRF) as client:
+        login(client)
+        assert [n["title"] for n in client.get("/api/notes").json()] == ["Import"]
+        response = client.post("/api/notes", json={"title": "Created", "content": "one"})
+        assert response.status_code == 201
+        note = response.json()
+        path = "/api/notes/" + note["id"]
+        saved = client.put(
+            path,
+            json={
+                "title": "Renamed",
+                "content": "two",
+                "base_revision": note["revision"],
+            },
+        )
+        assert saved.status_code == 200
+        assert client.get(path).json()["content"] == "two"
+        assert client.delete(path).status_code == 204
+        entry = client.get("/api/trash").json()[0]["trash_id"]
+        assert client.post("/api/trash/" + entry + "/restore").status_code == 200
+        # Configuration aliases are resolved once, not followed on every request.
+        other = tmp_path / "other"
+        other.mkdir()
+        link.unlink()
+        link.symlink_to(other, target_is_directory=True)
+        assert client.get(path).json()["content"] == "two"
+        assert list(other.iterdir()) == []

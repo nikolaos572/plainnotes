@@ -41,6 +41,10 @@ class DataDir:
     _warned: set[str] = field(default_factory=set)
     _warned_lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def __post_init__(self) -> None:
+        """Bind the administrator-configured root once; children still reject symlinks."""
+        self.root = self.root.resolve(strict=True)
+
     def warn_once(self, logger: logging.Logger, message: str, *args: object) -> None:
         """Log a warning the first time this exact message occurs in this process."""
         key = message % args
