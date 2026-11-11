@@ -31,7 +31,7 @@ data/
 - **Wrap lines:** in Text view and in the editor, untick **Wrap lines** to keep long lines (such as commands) on one line and scroll sideways instead. The choice is remembered for both.
 - **Pinned notes:** add the tag `#pinned` anywhere in a note to list it in a **Pinned** section at the top of the home page. Remove the tag to unpin it.
 - **Deleting:** **Delete** moves the note to the trash; the message that follows has an **Undo** button for a few seconds.
-- **Drafts:** each editor keeps an independent recovery draft in this browser, including separate new-note tabs. Recovery is offered when you reopen the editor, even if the original note was deleted. A persistent warning appears if storage fails. Drafts are written shortly after typing pauses; the newest keystrokes may not survive an immediate crash, so save valuable work explicitly. Identical drafts are removed after that text is saved, while other versions remain until discarded. Logout asks before deleting this installation’s drafts and ending editing in its other tabs.
+- **Drafts:** each editor keeps an independent recovery draft in this browser, including separate new-note tabs. Recovery is offered when you reopen the editor, even if the original note was deleted. A persistent warning appears if storage fails. Drafts are written shortly after typing pauses; the newest keystrokes may not survive an immediate crash, so save valuable work explicitly. Identical drafts are removed after that text is saved, while other versions remain until discarded. Discarding an editor copy does not delete the recovery record it was restored from; use Discard in the recovery dialog to delete that record explicitly. Logout asks before deleting this installation’s drafts and ending editing in its other tabs. Cancelling or a failed logout keeps drafts; editing pauses while the logout request is pending and resumes on failure or timeout.
 - **Printing:** printing a note (`Ctrl`/`Cmd` + `P`) leaves out the header and buttons, uses black on white in either theme, and wraps long lines so nothing is cut off.
 
 ## Markdown
@@ -69,6 +69,8 @@ These are ordinary files, excluded from search and the attachment API. Failed or
 saves can also leave the proposed new content there. Compare file contents before recovery;
 folder IDs do not indicate chronological order. Copy the chosen file to a safe location,
 then restore its content through the editor or while the app and external editors are stopped.
+
+Recovery directories are private to the application owner. Run backups as that owner or an account with permission to read them.
 
 History is not automatically pruned. Include it in backups and remove unwanted versions
 manually only after checking them. Moving a note to trash keeps its history; permanently

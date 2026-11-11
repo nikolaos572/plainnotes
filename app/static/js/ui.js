@@ -178,7 +178,7 @@ export function errorPage(error) {
   return messagePage("Something went wrong", error.message);
 }
 
- 
+
 /** End view-owned dialogs when another tab ends the session. */
 export function dismissDialogs() {
   for (const dialog of document.querySelectorAll("dialog[open]")) {

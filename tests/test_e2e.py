@@ -1168,6 +1168,7 @@ def test_lone_cr_edits_and_draft_recovery_preserve_convention(context, page, ser
     wait_for_draft(page, note["id"])
     recovered, _ = reopen(context, page, route)
     recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("a\nb\nc\n")
     recovered.keyboard.press("Control+s")
     expect(recovered.locator(".dirty-dot")).to_be_hidden()
     assert note_file(server, note).read_bytes() == b"a\rb\rc\r"
@@ -1335,3 +1336,70 @@ def test_cross_tab_logout_closes_recovery_dialog(context, page):
     expect(other.get_by_label("Username")).to_be_visible()
     expect(other.locator("dialog")).to_have_count(0)
     assert all_drafts(other, note["id"]) == []
+
+
+def test_hung_logout_times_out_without_losing_drafts(page):
+    page.clock.install()
+    note = create_note(page, unique("Logout timeout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    expect(page.get_by_label("Note text")).to_be_visible()
+    page.route("**/api/logout", lambda route: None)
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator("main")).to_have_js_property("inert", True)
+    page.clock.fast_forward(16_000)
+    expect(page.locator("main")).to_have_js_property("inert", False)
+    expect(page.locator(".toast.error")).to_contain_text("Cannot reach")
+    page.get_by_label("Note text").fill("after timeout")
+    page.clock.fast_forward(300)
+    assert wait_for_draft(page, note["id"])["content"] == "after timeout"
+
+
+def test_late_save_response_does_not_update_logged_out_page(context, page):
+    note = create_note(page, unique("Private editor title"), "original")
+    path = f"api/notes/{note['id']}"
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("saved just before logout")
+    held = []
+
+    def hold_response(route):
+        held.append((route, route.fetch()))
+
+    page.route("**/" + path, hold_response)
+    page.keyboard.press("Control+s")
+
+    def response_ready():
+        page.wait_for_timeout(20)
+        return held
+
+    eventually(response_ready, "save response not captured")
+    other = context.new_page()
+    other.goto("#/")
+    other.get_by_text("Menu", exact=True).click()
+    other.get_by_role("button", name="Log out", exact=True).click()
+    other.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    held[0][0].fulfill(response=held[0][1])
+    page.wait_for_timeout(300)
+    expect(page).to_have_title("plainnotes")
+    expect(page.locator(".toast").filter(has_text=re.compile("^Saved$"))).to_have_count(0)
+    assert all_drafts(page, note["id"]) == []
+
+
+def test_successful_local_logout_closes_late_dialog(page):
+    page.goto("#/")
+    held = []
+    page.route("**/api/logout", lambda route: held.append(route))
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator("main")).to_have_js_property("inert", True)
+    page.evaluate("""async () => {
+        const ui = await import("./static/js/ui.js");
+        ui.showDialog({title: "Delayed recovery prompt", buttons: [{label: "Keep", value: null}]});
+    }""")
+    expect(page.locator("dialog[open]")).to_be_visible()
+    held[0].fulfill(response=held[0].fetch())
+    expect(page.get_by_label("Username")).to_be_visible()
+    expect(page.locator("dialog")).to_have_count(0)

@@ -124,6 +124,8 @@ export async function editorView({ id, query }, app) {
     leaving: false,
   };
 
+  let destroyed = false;
+
   const titleInput = el("input", {
     id: "note-title",
     class: "title-input",
@@ -179,6 +181,7 @@ export async function editorView({ id, query }, app) {
   }
 
   function refresh() {
+    if (destroyed) return;
     const dirty = isDirty();
     dot.hidden = !dirty;
     saveButton.setAttribute("aria-label", dirty ? "Save (unsaved changes)" : "Save");
@@ -191,7 +194,6 @@ export async function editorView({ id, query }, app) {
   const ownerReady = drafts.beginEditor().catch(() => null);
   let movedDraftId = null;
   let draftWork = Promise.resolve(true);
-  let destroyed = false;
   let restoredDraft = null;
   const draftWarning = el("p", {
     class: "field-error", role: "alert", hidden: true, id: "draft-warning",
@@ -329,7 +331,7 @@ export async function editorView({ id, query }, app) {
           ? await api.updateNote(state.id, title, content, state.revision)
           : await api.createNote(title, content);
         await applySaved(saved, title, value);
-        toast("Saved");
+        if (!destroyed) toast("Saved");
         return !isDirty();
       } catch (error) {
         if (error.code === "revision_conflict") {
@@ -397,7 +399,8 @@ export async function editorView({ id, query }, app) {
   }
 
   async function close() {
-    if (!(await resolveUnsaved())) return;
+    if (destroyed) return;
+    if (!(await resolveUnsaved()) || destroyed) return;
     state.leaving = true;
     app.navigate(state.id ? `#/note/${encodeURIComponent(state.id)}` : "#/");
   }

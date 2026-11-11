@@ -115,7 +115,9 @@ async function logout() {
   loggingOut = true;
   try {
     // Collect choices without deleting drafts: either dialog or the request can fail/cancel.
-    if (current?.prepareLogout && !(await current.prepareLogout())) return;
+    const source = current;
+    if (source?.prepareLogout && !(await source.prepareLogout())) return;
+    if (current !== source) return;
     if (!(await confirmAction(
       "Log out and delete recovery drafts?",
       "This deletes recovery drafts for this installation and ends editing in all its open tabs. " +
@@ -141,6 +143,7 @@ async function logout() {
       notifyLogout();
       showError(new Error("Recovery drafts could not be erased. Clear browser site data after logging out."));
     }
+    dismissDialogs();
     app.session = null;
     app.navigate("#/login", { replace: true });
   } finally {

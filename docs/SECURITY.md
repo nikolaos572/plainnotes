@@ -106,7 +106,9 @@ line endings and canonical base paths. See [the user guide](guide.md) for recove
 
 Previous content is retained under each note's hidden .history directory and is not
 exposed by any API route. It moves with the note to trash and is removed by permanent
-trash deletion. It is not automatically pruned; account for its disk usage in backups.
+trash deletion. It is not automatically pruned; account for its disk usage in backups. Recovery
+directories are owner-only, and proposed files are private from creation, including
+failed-write artifacts. Existing recovery directories are restricted on the next content save.
 
 Content replacement uses Linux renameat2 with RENAME_EXCHANGE; unsupported filesystems
 fail safely. This preserves the file displaced at commit time, including a concurrent
@@ -114,7 +116,8 @@ external version, but cannot prevent an external program from subsequently chang
 deleting files. Do not run multiple app instances against the same data directory.
 
 Drafts are scoped by installation path and editor instance in IndexedDB. Logout asks
-before deleting recovery drafts and invalidates old editors atomically. If browser
+before deleting recovery drafts; after server logout succeeds, it invalidates old editors
+and purges drafts atomically. Cancelled and failed logouts retain recovery drafts. If browser
 storage cannot be accessed, logout still ends the session and reports that local drafts
 could not be erased. Clear browser site data in that case.
 

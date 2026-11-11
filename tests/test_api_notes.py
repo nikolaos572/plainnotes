@@ -300,3 +300,24 @@ def test_import_at_startup(app_factory: Callable, data_root: Path) -> None:
         pass
     names = sorted(p.name for p in data_root.iterdir())
     assert len(names) == 1 and notes.is_note_id(names[0])
+
+
+def test_history_is_not_exposed_by_api_or_search(client, data_root):
+    note = create(client, "History isolation", "PRIVATE_HISTORY_MARKER")
+    path = "/api/notes/" + note["id"]
+    response = client.put(
+        path,
+        json={
+            "title": note["title"],
+            "content": "current",
+            "base_revision": note["revision"],
+        },
+    )
+    assert response.status_code == 200
+    archived = next((data_root / note["id"] / ".history").rglob("*.md"))
+    assert archived.read_text() == "PRIVATE_HISTORY_MARKER"
+    assert client.get("/api/search", params={"q": "PRIVATE_HISTORY_MARKER"}).json() == []
+    assert client.get(path + "/attachments").json() == []
+    relative = archived.relative_to(data_root / note["id"]).as_posix()
+    for url in [path + "/" + relative, "/static/" + relative, path + "/attachments/../" + relative]:
+        assert client.get(url).status_code == 404

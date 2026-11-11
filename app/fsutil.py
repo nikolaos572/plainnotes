@@ -178,9 +178,9 @@ def atomic_write(target: Path, data: bytes, *, mode: int = 0o666) -> None:
             file.write(data)
             file.flush()
             os.fsync(file.fileno())
-            mode = _lstat_mode(target)
-            if mode is not None and stat.S_ISREG(mode):
-                os.fchmod(file.fileno(), stat.S_IMODE(mode))
+            target_mode = _lstat_mode(target)
+            if target_mode is not None and stat.S_ISREG(target_mode):
+                os.fchmod(file.fileno(), stat.S_IMODE(target_mode))
         os.replace(temp, target)
     except BaseException as exc:
         temp.unlink(missing_ok=True)
