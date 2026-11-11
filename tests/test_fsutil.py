@@ -1,5 +1,6 @@
 """Safe paths, symlink handling, atomic writes and temp-file cleanup."""
 
+import errno
 import logging
 import os
 import stat
@@ -133,3 +134,37 @@ def test_warn_once(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
             data_dir.warn_once(logger, "Skipping %r", "folder")
         data_dir.warn_once(logger, "Skipping %r", "other")
     assert [r.getMessage() for r in caplog.records] == ["Skipping 'folder'", "Skipping 'other'"]
+
+
+@pytest.mark.parametrize("error", [errno.EIO, errno.EACCES])
+def test_directory_sync_reports_real_errors(tmp_path, monkeypatch, error):
+    def fail(_fd):
+        raise OSError(error, "injected flush failure")
+
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(OSError):
+        fsutil.fsync_dir(tmp_path)
+
+
+def test_directory_sync_tolerates_unsupported_filesystem(tmp_path, monkeypatch):
+    def unsupported(_fd):
+        raise OSError(errno.EINVAL, "unsupported")
+
+    monkeypatch.setattr(os, "fsync", unsupported)
+    fsutil.fsync_dir(tmp_path)
+
+
+def test_post_replace_sync_error_is_not_success(tmp_path, monkeypatch):
+    target = tmp_path / "note.md"
+    target.write_bytes(b"old")
+    real = os.fsync
+
+    def fail_directory(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory I/O failure")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory)
+    with pytest.raises(OSError):
+        fsutil.atomic_write(target, b"new")
+    assert target.read_bytes() == b"new"  # committed, but durability could not be confirmed

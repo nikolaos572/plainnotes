@@ -326,6 +326,7 @@ def delete_note(data_dir: DataDir, note_id: str, now: datetime | None = None) ->
                 break
             moment += 1
         ref.folder.rename(trash / trash_id)
+        fsutil.fsync_dir(trash)
         fsutil.fsync_dir(data_dir.root)
     return trash_id
 
@@ -390,6 +391,7 @@ def _import_one(data_dir: DataDir, name: str, taken: set[str]) -> None:
         return
     if not fsutil.is_real_file(source):
         return
+    fsutil.fsync_file(source)
     # A crash leaves the original loose file or a complete note, never the only
     # copy inside a staging directory that startup cleanup deletes.
     while True:

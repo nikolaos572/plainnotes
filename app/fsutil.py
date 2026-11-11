@@ -141,14 +141,25 @@ def create_temp_dir(parent: Path) -> Path:
 
 def fsync_dir(path: Path) -> None:
     """Flush a folder's entries to disk; ignored where the filesystem does not support it."""
+    fd = os.open(path, os.O_RDONLY | _CLOEXEC | _NOFOLLOW)
     try:
-        fd = os.open(path, os.O_RDONLY | _CLOEXEC)
-    except OSError:
-        return
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.ENOSYS}:
+                raise_if_full(exc)
+                raise
+    finally:
+        os.close(fd)
+
+
+def fsync_file(path: Path) -> None:
+    """Flush an imported regular file without following symlinks."""
+    fd = os.open(path, os.O_RDONLY | _CLOEXEC | _NOFOLLOW | _NONBLOCK)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
         os.fsync(fd)
-    except OSError:
-        pass
     finally:
         os.close(fd)
 
