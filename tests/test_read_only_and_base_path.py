@@ -107,3 +107,17 @@ def test_base_path_routes_all_require_a_session(prefixed: TestClient) -> None:
             continue
         response = prefixed.request(method, path, headers=CSRF, json={})
         assert response.status_code == 401, (method, path)
+
+
+def test_read_only_startup_and_gets_never_mutate_files(app_factory, data_root):
+    loose = data_root / "Loose.md"
+    loose.write_bytes(b"original")
+    staging = data_root / ".plainnotes-tmp-original"
+    staging.write_bytes(b"keep staging")
+    with TestClient(app_factory(read_only=True), headers=CSRF) as client:
+        login(client)
+        for path in ["/api/notes", "/api/search", "/api/tags"]:
+            assert client.get(path).status_code == 200
+            assert loose.read_bytes() == b"original"
+            assert staging.read_bytes() == b"keep staging"
+    assert sorted(p.name for p in data_root.iterdir()) == [staging.name, loose.name]

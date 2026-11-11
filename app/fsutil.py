@@ -36,6 +36,7 @@ class DataDir:
     """The data folder plus the per-app lock and the set of warnings already logged."""
 
     root: Path
+    read_only: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
     _warned: set[str] = field(default_factory=set)
     _warned_lock: threading.Lock = field(default_factory=threading.Lock)

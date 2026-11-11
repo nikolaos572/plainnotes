@@ -342,6 +342,8 @@ def delete_note(data_dir: DataDir, note_id: str, now: datetime | None = None) ->
 
 def cleanup_temp_files(data_dir: DataDir) -> None:
     """Startup cleanup: remove leftover temp entries at the top level and inside note folders."""
+    if data_dir.read_only:
+        return
     # Older releases moved original imports into these directories. Never delete them.
     removed = fsutil.remove_temp_entries(data_dir.root, preserve_dirs=True)
     with os.scandir(data_dir.root) as entries:
@@ -369,6 +371,8 @@ def mtime_moment(mtime: float) -> datetime:
 
 def import_loose_files(data_dir: DataDir) -> None:
     """Move every loose top-level .md file into a new note folder (the drop-in import)."""
+    if data_dir.read_only:
+        return
     with os.scandir(data_dir.root) as entries:
         names = [
             entry.name

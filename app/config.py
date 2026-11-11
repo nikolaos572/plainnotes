@@ -90,10 +90,19 @@ def config_warnings(settings: Settings) -> list[str]:
     return warnings
 
 
-def check_data_dir(path: Path) -> None:
+def check_data_dir(path: Path, *, read_only: bool = False) -> None:
     """Raise ConfigError unless path is an existing directory this process can write to."""
     if not path.is_dir():
         raise ConfigError(f"PLAINNOTES_DATA_DIR: {path} does not exist or is not a directory.")
+    if read_only:
+        try:
+            with os.scandir(path) as entries:
+                next(entries, None)
+            if not os.access(path, os.R_OK | os.X_OK):
+                raise PermissionError
+        except OSError:
+            raise ConfigError(f"PLAINNOTES_DATA_DIR: {path} is not readable.") from None
+        return
     try:
         fd, probe = fsutil.create_temp_file(path)
         os.close(fd)
