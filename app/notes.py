@@ -288,7 +288,9 @@ def update_note(
     with data_dir.lock:
         ref = find_note(data_dir, note_id)
         current_data, current_content = _load(ref)
-        current = Note(ref=ref, content=current_content, revision=revision_of(current_data, ref.title))
+        current = Note(
+            ref=ref, content=current_content, revision=revision_of(current_data, ref.title)
+        )
         if current.revision != base_revision:
             raise RevisionConflict(current)
         new_title = ref.title if title == ref.title else clean_title(title)
@@ -297,7 +299,13 @@ def update_note(
         if new_title != ref.title:
             _ensure_title_free(data_dir, new_title, own_id=ref.id)
         if data != current_data:
-            fsutil.atomic_write(ref.path, data)
+
+            def check_current() -> None:
+                latest = read_note(data_dir, note_id)
+                if latest.revision != base_revision:
+                    raise RevisionConflict(latest)
+
+            fsutil.replace_with_history(ref.path, data, check_current)
         if new_title != ref.title:
             ref.path.rename(fsutil.safe_child(ref.folder, new_title + ".md", _is_note_filename))
             fsutil.fsync_dir(ref.folder)

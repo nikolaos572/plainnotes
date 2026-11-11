@@ -141,7 +141,7 @@ def test_update_content_and_rename(data_dir: DataDir) -> None:
     updated = notes.update_note(data_dir, note.ref.id, "New", "two", note.revision)
     assert updated.ref.title == "New"
     folder = data_dir.root / note.ref.id
-    assert [p.name for p in folder.iterdir()] == ["New.md"]
+    assert sorted(p.name for p in folder.iterdir()) == [".history", "New.md"]
     assert (folder / "New.md").read_bytes() == b"two"
 
 
@@ -400,3 +400,59 @@ def test_rename_invalidates_stale_revision(data_dir, external):
         notes.update_note(data_dir, original.ref.id, "Original", "stale edit", original.revision)
     assert conflict.value.current.ref.title == "Renamed"
     assert notes.read_note(data_dir, original.ref.id).content == "same"
+
+
+def test_external_replace_at_commit_is_preserved(data_dir, monkeypatch):
+    from app import fsutil
+
+    note = notes.create_note(data_dir, "Race", "original")
+    exchange = fsutil.exchange_files
+
+    def race(first, second):
+        external = second.with_name(".external")
+        external.write_bytes(b"external editor version")
+        external.replace(second)
+        exchange(first, second)
+
+    monkeypatch.setattr(fsutil, "exchange_files", race)
+    notes.update_note(data_dir, note.ref.id, "Race", "browser version", note.revision)
+    assert note.ref.path.read_bytes() == b"browser version"
+    versions = list((note.ref.folder / ".history").rglob("*.md"))
+    assert [p.read_bytes() for p in versions] == [b"external editor version"]
+    notes.cleanup_temp_files(data_dir)
+    assert versions[0].read_bytes() == b"external editor version"
+
+
+@pytest.mark.parametrize("after_exchange", [False, True])
+def test_interrupted_history_save_retains_both_versions(data_dir, monkeypatch, after_exchange):
+    from app import fsutil
+
+    note = notes.create_note(data_dir, "Crash", "original")
+    exchange = fsutil.exchange_files
+
+    def interrupt(first, second):
+        if after_exchange:
+            exchange(first, second)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fsutil, "exchange_files", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        notes.update_note(data_dir, note.ref.id, "Crash", "proposed", note.revision)
+    notes.cleanup_temp_files(data_dir)
+    assert {p.read_bytes() for p in note.ref.folder.rglob("*.md")} == {b"original", b"proposed"}
+
+
+def test_external_write_during_preparation_is_conflict(data_dir, monkeypatch):
+    from app import fsutil
+
+    note = notes.create_note(data_dir, "Race", "original")
+    write = fsutil.atomic_write
+
+    def race(path, data):
+        write(path, data)
+        note.ref.path.write_bytes(b"external")
+
+    monkeypatch.setattr(fsutil, "atomic_write", race)
+    with pytest.raises(notes.RevisionConflict):
+        notes.update_note(data_dir, note.ref.id, "Race", "browser", note.revision)
+    assert note.ref.path.read_bytes() == b"external"

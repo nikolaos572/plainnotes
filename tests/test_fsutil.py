@@ -168,3 +168,17 @@ def test_post_replace_sync_error_is_not_success(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         fsutil.atomic_write(target, b"new")
     assert target.read_bytes() == b"new"  # committed, but durability could not be confirmed
+
+
+def test_unsupported_exchange_keeps_original(tmp_path, monkeypatch):
+    target = tmp_path / "note.md"
+    target.write_bytes(b"original")
+
+    def unsupported(*_args):
+        raise OSError(errno.ENOSYS, "unsupported exchange")
+
+    monkeypatch.setattr(fsutil, "exchange_files", unsupported)
+    with pytest.raises(OSError):
+        fsutil.replace_with_history(target, b"proposed", lambda: None)
+    assert target.read_bytes() == b"original"
+    assert [p.read_bytes() for p in (tmp_path / ".history").rglob("*.md")] == [b"proposed"]

@@ -17,7 +17,7 @@ data/
         └── Old note.md
 ```
 
-- **Edit files directly** with any editor or sync tool. plainnotes reads the disk on every request, so changes, renamed files and new attachments appear on the next page load. If a note changes on disk while it is open in the editor, saving shows a conflict dialog instead of overwriting.
+- **Edit files directly** with any editor or sync tool. plainnotes reads the disk on every request, so changes, renamed files and new attachments appear on the next page load. Changes detected before saving show a conflict dialog. Avoid simultaneous writes with external editors: they do not participate in the app lock. Content saves retain the exact displaced file under the note folder’s hidden .history/ directory, including an external version replaced at the final instant.
 - **Import existing notes** by placing `.md` files directly in the data folder. On the next start or page load, each one is moved into a new note folder (the file itself and its date stay unchanged). Files whose name is not a valid title, or whose title is already used, stay where they are. Try it on a copy of your files first.
 - **Back up** by copying the whole data folder; it contains everything.
 - **The trash:** deleting a note moves its folder, with its attachments, to `.trash/`. From the Trash page you can restore it or delete it permanently. Nothing is purged automatically.
@@ -61,3 +61,25 @@ In the editor, upload files with the button, by dragging them onto the editor or
 | `Ctrl`/`Cmd` + `S` or `Enter` | editor | Save |
 | `Esc` | editor | Close (asks about unsaved changes) |
 | `Tab` / `Shift` + `Tab` | editor text | Insert a tab / move focus out |
+
+ 
+## Recovering previous content
+
+Every content change retains the displaced file in `data/<note-id>/.history/<random-id>/<title>.md`.
+These are ordinary files, excluded from search and the attachment API. Failed or interrupted
+saves can also leave the proposed new content there. Compare file contents before recovery;
+folder IDs do not indicate chronological order. Copy the chosen file to a safe location,
+then restore its content through the editor or while the app and external editors are stopped.
+
+History is not automatically pruned. Include it in backups and remove unwanted versions
+manually only after checking them. Moving a note to trash keeps its history; permanently
+deleting that trash entry deletes its history too. This protects the file displaced by an
+app save, not arbitrary deletions or later overwrites performed by external programs.
+
+Content updates require Linux renameat2(RENAME_EXCHANGE) support on the data filesystem
+(as in the documented Docker deployment). Unsupported filesystems fail the save safely
+rather than falling back to a replacement that could lose a concurrent version.
+
+If upgrading after an interrupted import, retain any nonempty
+`.plainnotes-tmp-*` directories at the data root. Copy their Markdown files to safety
+and reimport them manually; startup deliberately leaves these legacy directories untouched.

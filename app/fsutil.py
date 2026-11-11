@@ -3,6 +3,7 @@
 Every path derived from user input is built with safe_child(); nothing here follows symlinks.
 """
 
+import ctypes
 import errno
 import logging
 import os
@@ -206,3 +207,51 @@ def remove_temp_entries(folder: Path, *, preserve_dirs: bool = False) -> int:
         except OSError:
             continue
     return removed
+
+
+def exchange_files(first: Path, second: Path) -> None:
+    """Atomically exchange two existing paths on Linux; never fall back to replacement."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        exchange = libc.renameat2
+    except AttributeError:
+        raise OSError(errno.ENOSYS, "Atomic exchange is unavailable on this platform") from None
+    exchange.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    exchange.restype = ctypes.c_int
+    if exchange(-100, os.fsencode(first), -100, os.fsencode(second), 2) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def replace_with_history(target: Path, data: bytes, check_current: Callable[[], None]) -> None:
+    """Publish data while retaining the exact displaced inode in .history.
+
+    Both sides exist before exchange, so an interruption leaves both versions recoverable.
+    Failed attempts may leave a proposed version in history; cleanup must never remove it.
+    """
+    history = target.parent / ".history"
+    history.mkdir(exist_ok=True)
+    if not is_real_dir(history):
+        raise OSError(errno.EINVAL, "History is not a real directory")
+    fsync_dir(target.parent)
+    version = history / secrets.token_hex(16)
+    version.mkdir()
+    fsync_dir(history)
+    previous = version / target.name
+    atomic_write(previous, data)
+    mode = target.lstat().st_mode
+    if not stat.S_ISREG(mode):
+        raise OSError(errno.EINVAL, "Note is not a regular file")
+    previous.chmod(stat.S_IMODE(mode))
+    fsync_file(previous)
+    check_current()
+    exchange_files(previous, target)
+    fsync_file(previous)
+    fsync_dir(version)
+    fsync_dir(target.parent)

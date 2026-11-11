@@ -85,7 +85,10 @@ def test_update_rename_and_case_only_rename(client: TestClient, data_root: Path)
     ).json()
     assert moved["title"] == "Containers"
     assert moved["content"] == "two"
-    assert [p.name for p in (data_root / note["id"]).iterdir()] == ["Containers.md"]
+    assert sorted(p.name for p in (data_root / note["id"]).iterdir()) == [
+        ".history",
+        "Containers.md",
+    ]
     assert client.get(f"/api/notes/{note['id']}").json()["title"] == "Containers"
 
 
