@@ -1171,3 +1171,34 @@ def test_lone_cr_edits_and_draft_recovery_preserve_convention(context, page, ser
     recovered.keyboard.press("Control+s")
     expect(recovered.locator(".dirty-dot")).to_be_hidden()
     assert note_file(server, note).read_bytes() == b"a\rb\rc\r"
+
+
+def test_discarding_restored_copy_preserves_original_tab(context, page):
+    note = create_note(page, unique("Original draft"), "server text")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    page.get_by_label("Note text").fill("A has never saved this")
+    wait_for_draft(page, note["id"])
+    second = context.new_page()
+    second.goto(route)
+    second.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(second.get_by_label("Note text")).to_have_value("A has never saved this")
+    eventually(lambda: len(all_drafts(page, note["id"])) == 2, "second draft missing")
+    second.get_by_label("Note text").fill("B changed the restored copy")
+    eventually(
+        lambda: any(
+            d["content"] == "B changed the restored copy" for d in all_drafts(page, note["id"])
+        ),
+        "B edit not persisted",
+    )
+    second.get_by_role("button", name="Close", exact=True).click()
+    second.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    expect(second.get_by_role("heading", name=note["title"], exact=True)).to_be_visible()
+    expect(page.get_by_label("Note text")).to_have_value("A has never saved this")
+    remaining = all_drafts(page, note["id"])
+    assert any(d["content"] == "A has never saved this" for d in remaining), remaining
+    page.close()
+    recovered = context.new_page()
+    recovered.goto(route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("A has never saved this")

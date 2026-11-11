@@ -231,11 +231,9 @@ export async function editorView({ id, query }, app) {
     clearTimeout(draftTimer);
     draftTimer = null;
     const noteId = state.id;
-    const restored = restoredDraft;
     restoredDraft = null;
     return queueDraft(async (editor) => {
       await drafts.removeDraft(noteId, editor);
-      if (restored) await drafts.discardDraft(restored);
     });
   }
 
