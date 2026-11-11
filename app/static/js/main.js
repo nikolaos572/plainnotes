@@ -8,9 +8,9 @@
 
 import * as api from "./api.js";
 import { el } from "./dom.js";
-import { removeAllDrafts } from "./drafts.js";
+import { notifyLogout, removeAllDrafts } from "./drafts.js";
 import { icon } from "./icons.js";
-import { isDialogOpen, messagePage, showError } from "./ui.js";
+import { confirmAction, isDialogOpen, messagePage, showError } from "./ui.js";
 import { editorView } from "./views/editor.js";
 import { listHash, listView } from "./views/list.js";
 import { loginView } from "./views/login.js";
@@ -109,6 +109,18 @@ function setTheme(theme) {
 
 async function logout() {
   if (current?.canLeave && !(await current.canLeave())) return;
+  if (!(await confirmAction(
+    "Log out and delete recovery drafts?",
+    "This deletes recovery drafts for this installation and ends editing in all its open tabs. " +
+      "Save changes in other tabs first.",
+    { label: "Log out", kind: "danger", icon: "log-out" },
+  ))) return;
+  try {
+    await removeAllDrafts();
+  } catch {
+    notifyLogout();
+    showError(new Error("Recovery drafts could not be erased. Clear browser site data after logging out."));
+  }
   try {
     await api.logout();
   } catch (error) {
@@ -117,7 +129,6 @@ async function logout() {
       return;
     }
   }
-  removeAllDrafts();
   app.session = null;
   location.hash = "#/login";
 }
@@ -274,6 +285,11 @@ document.addEventListener("click", (event) => {
 });
 menu.addEventListener("click", (event) => {
   if (event.target.closest(".menu-item")) menu.open = false;
+});
+
+window.addEventListener("plainnotes:logout", () => {
+  app.session = null;
+  app.navigate("#/login", { replace: true });
 });
 
 async function boot() {

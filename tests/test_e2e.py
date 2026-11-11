@@ -239,6 +239,7 @@ def test_login_and_logout(context: BrowserContext, server: Server) -> None:
     expect(page.get_by_role("heading", name="Tags")).to_be_visible()
     page.get_by_text("Menu").click()
     page.get_by_role("button", name="Log out").click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
     expect(page.get_by_label("Username")).to_be_visible()
     assert page.request.get(server.url + "api/session").status == 401
 
@@ -286,7 +287,10 @@ def test_create_edit_save_and_rename(page: Page, server: Server) -> None:
     page.get_by_label("Title").fill(renamed.upper())
     page.keyboard.press("Control+s")
     expect(page.locator(".dirty-dot")).to_be_hidden()
-    assert [p.name for p in (server.data / note_id).iterdir()] == [f"{renamed.upper()}.md"]
+    assert sorted(p.name for p in (server.data / note_id).iterdir()) == [
+        ".history",
+        f"{renamed.upper()}.md",
+    ]
     page.get_by_role("button", name="Close").click()
     expect(page.get_by_role("heading", name=renamed.upper())).to_be_visible()
     expect(page).to_have_title(f"{renamed.upper()} – plainnotes")
@@ -729,8 +733,13 @@ def test_xss_in_titles_attachment_names_and_search(
 
 
 def draft(page: Page, key: str) -> dict | None:
-    value = page.evaluate(f"localStorage.getItem('plainnotes.draft.{key}')")
-    return json.loads(value) if value else None
+    return page.evaluate(
+        """async (key) => {
+            const drafts = await import("./static/js/drafts.js");
+            return (await drafts.loadDrafts(key === "new" ? null : key))[0] ?? null;
+        }""",
+        key,
+    )
 
 
 def eventually(check: Callable[[], object], failure: str, timeout: float = 5) -> object:
@@ -833,6 +842,7 @@ def test_draft_of_a_new_note_and_logout(context: BrowserContext, page: Page) -> 
     second.get_by_text("Menu").click()
     second.get_by_role("button", name="Log out").click()
     second.locator("dialog[open]").get_by_role("button", name="Discard").click()
+    second.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
     expect(second.get_by_label("Username")).to_be_visible()
     keys = second.evaluate("Object.keys(localStorage)")
     assert not [key for key in keys if key.startswith("plainnotes.draft.")]
@@ -975,3 +985,165 @@ def test_malformed_and_unknown_routes(page: Page) -> None:
     expect(page.get_by_role("heading", name="Not found")).to_be_visible()
     page.get_by_role("link", name="Back to all notes").click()
     expect(page.get_by_role("heading", name="All notes")).to_be_visible()
+
+
+def all_drafts(page, note_id):
+    return page.evaluate(
+        """async (id) => (await import("./static/js/drafts.js")).loadDrafts(id)""",
+        note_id,
+    )
+
+
+def test_saving_other_tab_keeps_independent_draft(context, page):
+    note = create_note(page, unique("Independent tabs"), "original")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    other = context.new_page()
+    other.goto(route)
+    expect(page.get_by_label("Note text")).to_have_value("original")
+    expect(other.get_by_label("Note text")).to_have_value("original")
+    page.get_by_label("Note text").fill("A unsaved")
+    wait_for_draft(page, note["id"])
+    other.get_by_label("Note text").fill("B saved")
+    other.keyboard.press("Control+s")
+    expect(other.locator(".dirty-dot")).to_be_hidden()
+    assert [d["content"] for d in all_drafts(other, note["id"])] == ["A unsaved"]
+    page.close()
+    other.close()
+    recovered = context.new_page()
+    recovered.goto(route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("A unsaved")
+    recovered.keyboard.press("Control+s")
+    expect(recovered.locator("dialog[open]")).to_contain_text("changed somewhere else")
+
+
+def test_two_new_notes_have_distinct_drafts(context, page):
+    page.goto("#/new")
+    other = context.new_page()
+    other.goto("#/new")
+    expect(page.get_by_label("Note text")).to_be_visible()
+    expect(other.get_by_label("Note text")).to_be_visible()
+    page.get_by_label("Title").fill(unique("First"))
+    page.get_by_label("Note text").fill("first draft")
+    other.get_by_label("Title").fill(unique("Second"))
+    other.get_by_label("Note text").fill("second draft")
+    eventually(lambda: len(all_drafts(page, None)) == 2, "two independent new-note drafts missing")
+    other.keyboard.press("Control+s")
+    expect(other.locator(".dirty-dot")).to_be_hidden()
+    assert [d["content"] for d in all_drafts(page, None)] == ["first draft"]
+
+
+def test_large_draft_survives_reload(context, page):
+    note = create_note(page, unique("Large draft"), "original")
+    page.goto(f"#/note/{note['id']}/edit")
+    text = "z" * (6 * 1024 * 1024)
+    page.get_by_label("Note text").fill(text)
+    assert wait_for_draft(page, note["id"])["content"] == text
+    recovered, _ = reopen(context, page, f"#/note/{note['id']}/edit")
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value(text)
+
+
+def test_draft_storage_failure_is_visible_and_server_save_still_works(page, server):
+    page.add_init_script("""IDBObjectStore.prototype.put = function() {
+        throw new DOMException("Injected quota", "QuotaExceededError");
+    };""")
+    note = create_note(page, unique("Quota failure"), "original")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("must not silently lose this")
+    expect(page.locator("#draft-warning")).to_be_visible()
+    expect(page.locator("#draft-warning")).to_contain_text("could not be stored")
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    assert note_file(server, note).read_text() == "must not silently lose this"
+
+
+def test_orphaned_draft_can_be_saved_as_new(context, page):
+    note = create_note(page, unique("Orphan"), "original")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    page.get_by_label("Note text").fill("recover this")
+    wait_for_draft(page, note["id"])
+    api(page, "DELETE", f"api/notes/{note['id']}")
+    recovered, _ = reopen(context, page, route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("recover this")
+    recovered.keyboard.press("Control+s")
+    recovered.locator("dialog[open]").get_by_role("button", name="Save as new note").click()
+    expect(recovered.locator(".dirty-dot")).to_be_hidden()
+    assert note["id"] not in recovered.url
+    assert all_drafts(recovered, note["id"]) == []
+    new_id = recovered.url.split("/note/")[1].split("/")[0]
+    assert api(recovered, "GET", f"api/notes/{new_id}")["content"] == "recover this"
+
+
+def test_legacy_localstorage_draft_is_recovered(page):
+    note = create_note(page, unique("Legacy"), "original")
+    page.goto("#/")
+    page.evaluate(
+        """(note) => localStorage.setItem("plainnotes.draft." + note.id, JSON.stringify({
+        title: note.title, content: "legacy unsaved", base_revision: note.revision,
+        saved_at: "2026-01-01T00:00:00Z"
+    }))""",
+        note,
+    )
+    page.goto(f"#/note/{note['id']}/edit")
+    page.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(page.get_by_label("Note text")).to_have_value("legacy unsaved")
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    wait_for_no_draft(page, note["id"])
+
+
+def test_logout_epoch_blocks_stale_writes(context, page):
+    page.goto("#/")
+    other = context.new_page()
+    other.goto("#/")
+    other.evaluate("""async () => {
+        const drafts = await import("./static/js/drafts.js");
+        window.auditOwner = await drafts.beginEditor();
+        await drafts.saveDraft(null, {title: "draft", content: "text"}, window.auditOwner);
+    }""")
+    page.evaluate("""async () => (await import("./static/js/drafts.js")).removeAllDrafts()""")
+    expect(other.get_by_label("Username")).to_be_visible()
+    assert other.evaluate("""async () => {
+        const drafts = await import("./static/js/drafts.js");
+        try {
+            const value = {title: "stale", content: "must not reappear"};
+            await drafts.saveDraft(null, value, window.auditOwner);
+            return false;
+        } catch { return true; }
+    }""")
+    assert all_drafts(other, None) == []
+
+
+def test_logout_still_works_when_draft_storage_is_unavailable(page, server):
+    page.add_init_script("""indexedDB.open = function() {
+        throw new DOMException("Storage unavailable", "SecurityError");
+    };""")
+    page.goto("#/")
+    page.get_by_text("Menu").click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    assert page.request.get(server.url + "api/session").status == 401
+    expect(page.locator(".toast.error")).to_contain_text("could not be erased")
+
+
+def test_draft_installation_namespaces(page):
+    page.goto("#/")
+    result = page.evaluate("""async () => {
+        const url = new URL("./static/js/drafts.js", location.href).href;
+        const first = await import(url);
+        const owner = await first.beginEditor();
+        await first.saveDraft(null, {title: "root", content: "keep"}, owner);
+        history.replaceState(null, "", "/second/");
+        const second = await import(url + "?second-installation");
+        const isolated = (await second.loadDrafts(null)).length === 0;
+        await second.removeAllDrafts();
+        const retained = (await first.loadDrafts(null))[0].content === "keep";
+        history.replaceState(null, "", "/");
+        return isolated && retained;
+    }""")
+    assert result

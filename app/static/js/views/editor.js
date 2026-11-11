@@ -95,16 +95,23 @@ export async function editorView({ id, query }, app) {
     return { node: el("section") };
   }
   let note = null;
+  let missing = false;
   if (id) {
     try {
       note = await api.getNote(id);
     } catch (error) {
-      return { node: errorPage(error) };
+      if (error.code !== "not_found") return { node: errorPage(error) };
+      try {
+        if (!(await drafts.loadDrafts(id)).length) return { node: errorPage(error) };
+      } catch {
+        return { node: errorPage(error) };
+      }
+      missing = true;
     }
   }
 
   const state = {
-    id: note?.id ?? null,
+    id: note?.id ?? id ?? null,
     revision: note?.revision ?? null,
     // Browsers turn every line break in a textarea into \n; remember to restore \r\n on save.
     crlf: note?.content.includes("\r\n") ?? false,
@@ -162,70 +169,128 @@ export async function editorView({ id, query }, app) {
 
   // --- drafts -----------------------------------------------------------------
   let draftTimer = null;
+  let owner = null;
+  const ownerReady = drafts.beginEditor().catch(() => null);
+  let movedDraftId = null;
+  let draftWork = Promise.resolve(true);
+  let destroyed = false;
+  let restoredDraft = null;
+  const draftWarning = el("p", {
+    class: "field-error", role: "alert", hidden: true, id: "draft-warning",
+  });
+
+  function queueDraft(operation) {
+    draftWork = draftWork.then(async () => {
+      owner ??= await ownerReady;
+      if (!owner) throw new Error("Draft storage is unavailable.");
+      await operation(owner);
+      draftWarning.hidden = true;
+      return true;
+    }).catch(() => {
+      draftWarning.textContent =
+        "Your recovery draft could not be stored. Save this note or copy your text before closing.";
+      draftWarning.hidden = false;
+      return false;
+    });
+    return draftWork;
+  }
 
   function writeDraft() {
     clearTimeout(draftTimer);
     draftTimer = null;
-    if (isDirty()) {
-      const draft = { title: titleInput.value, content: textarea.value, base_revision: state.revision };
-      drafts.saveDraft(state.id, draft);
-    } else {
-      drafts.removeDraft(state.id);
-    }
+    const noteId = state.id;
+    const draft = { title: titleInput.value, content: textarea.value, base_revision: state.revision };
+    const dirty = isDirty();
+    return queueDraft((editor) => dirty
+      ? drafts.saveDraft(noteId, draft, editor)
+      : drafts.removeDraft(noteId, editor));
   }
 
   function dropDraft() {
     clearTimeout(draftTimer);
     draftTimer = null;
-    drafts.removeDraft(state.id);
+    const noteId = state.id;
+    const restored = restoredDraft;
+    restoredDraft = null;
+    return queueDraft(async (editor) => {
+      await drafts.removeDraft(noteId, editor);
+      if (restored) await drafts.discardDraft(restored);
+    });
   }
 
   function onEdit() {
     refresh();
     clearTimeout(draftTimer);
-    draftTimer = setTimeout(writeDraft, 1000);
+    draftTimer = setTimeout(writeDraft, 250);
   }
 
   async function offerDraft() {
-    const draft = drafts.loadDraft(state.id);
-    if (!draft) return;
-    if (draft.title === state.loadedTitle && draft.content === state.loadedValue) {
-      drafts.removeDraft(state.id);
-      return;
-    }
-    const choice = await showDialog({
-      title: `Restore unsaved draft from ${formatDate(draft.saved_at)}?`,
-      message: "This browser kept changes that were never saved.",
-      buttons: [
-        { label: "Restore", value: "restore", kind: "primary", icon: "history" },
-        { label: "Discard", value: "discard", kind: "danger", icon: "trash-2" },
-      ],
-    });
-    if (choice === "restore") {
-      titleInput.value = draft.title;
-      textarea.value = draft.content;
-      // Saving uses the draft's own base revision, so the conflict check still applies.
-      state.revision = draft.base_revision ?? state.revision;
-      refresh();
-    } else if (choice === "discard") {
-      dropDraft();
+    try {
+      const candidates = await drafts.loadDrafts(state.id);
+      for (const draft of candidates) {
+        if (destroyed) return;
+        if (draft.title === state.loadedTitle && draft.content === state.loadedValue) {
+          await drafts.discardDraft(draft);
+          continue;
+        }
+        const choice = await showDialog({
+          title: `Restore unsaved draft from ${formatDate(draft.saved_at)}?`,
+          message: missing
+            ? "The original note no longer exists. Restore this draft, then save it as a new note."
+            : `This browser kept a draft of “${draft.title}”. Other drafts are kept independently.`,
+          buttons: [
+            { label: "Restore", value: "restore", kind: "primary", icon: "history" },
+            { label: "Discard", value: "discard", kind: "danger", icon: "trash-2" },
+            { label: "Keep for later", value: "keep", icon: "x" },
+          ],
+        });
+        if (destroyed) return;
+        if (choice === "restore") {
+          titleInput.value = draft.title;
+          textarea.value = draft.content;
+          state.revision = draft.base_revision ?? state.revision;
+          restoredDraft = draft;
+          refresh();
+          await writeDraft();
+          return;
+        }
+        if (choice !== "discard") return;
+        await drafts.discardDraft(draft);
+      }
+    } catch {
+      draftWarning.textContent =
+        "Recovery drafts are unavailable. Save this note or copy your text before closing.";
+      draftWarning.hidden = false;
     }
   }
 
-  function applySaved(saved, sentTitle, sentValue) {
-    const wasNew = state.id === null;
-    if (wasNew) drafts.removeDraft(null);
+  async function applySaved(saved, sentTitle, sentValue) {
+    const oldId = state.id;
+    const wasNew = oldId === null;
     state.id = saved.id;
     state.revision = saved.revision;
     if (titleInput.value === sentTitle) titleInput.value = saved.title;
     state.loadedTitle = saved.title;
     state.loadedValue = sentValue;
-    if (wasNew && location.hash.startsWith("#/new")) {
+    if (wasNew && !destroyed) {
       app.replaceRoute(`#/note/${encodeURIComponent(saved.id)}/edit`);
     }
     if (wasNew) renderPanel();
     refresh();
-    writeDraft();
+    await queueDraft(async (editor) => {
+      if (wasNew) await drafts.removeDraft(oldId, editor);
+      if (movedDraftId !== null) {
+        await drafts.removeDraft(movedDraftId, editor);
+        await drafts.removeMatchingDrafts(movedDraftId, saved.title, sentValue);
+        movedDraftId = null;
+      }
+      await drafts.removeMatchingDrafts(oldId, saved.title, sentValue);
+      if (restoredDraft?.content === sentValue && restoredDraft?.title === saved.title) {
+        await drafts.discardDraft(restoredDraft);
+        restoredDraft = null;
+      }
+    });
+    await writeDraft();
   }
 
   async function attemptSave() {
@@ -238,9 +303,9 @@ export async function editorView({ id, query }, app) {
         const saved = state.id
           ? await api.updateNote(state.id, title, content, state.revision)
           : await api.createNote(title, content);
-        applySaved(saved, title, value);
+        await applySaved(saved, title, value);
         toast("Saved");
-        return true;
+        return !isDirty();
       } catch (error) {
         if (error.code === "revision_conflict") {
           const current = error.body.current;
@@ -267,7 +332,8 @@ export async function editorView({ id, query }, app) {
         }
         if (error.code === "not_found" && state.id) {
           if ((await askSaveAsNew()) !== "new") return false;
-          dropDraft();
+          await writeDraft();
+          movedDraftId = state.id;
           state.id = null;
           state.revision = null;
           continue;
@@ -302,7 +368,7 @@ export async function editorView({ id, query }, app) {
     if (state.leaving || !isDirty()) return true;
     const choice = await askSaveChanges();
     if (choice === "save") return save();
-    if (choice === "discard") dropDraft();
+    if (choice === "discard") await dropDraft();
     return choice === "discard";
   }
 
@@ -478,6 +544,7 @@ export async function editorView({ id, query }, app) {
       el("div", { class: "editor-actions" }, wrapControl, saveButton, closeButton),
     ),
     titleError,
+    draftWarning,
     textarea,
     panel,
   );
@@ -528,6 +595,7 @@ export async function editorView({ id, query }, app) {
     },
     canLeave: resolveUnsaved,
     destroy() {
+      destroyed = true;
       if (draftTimer) writeDraft();
       window.removeEventListener("beforeunload", onBeforeUnload);
     },
