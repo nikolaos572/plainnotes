@@ -1202,3 +1202,136 @@ def test_discarding_restored_copy_preserves_original_tab(context, page):
     recovered.goto(route)
     recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
     expect(recovered.get_by_label("Note text")).to_have_value("A has never saved this")
+
+
+def test_cancelled_logout_leaves_current_editor_recoverable(page):
+    note = create_note(page, unique("Cancelled logout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("still displayed after cancelling logout")
+    wait_for_draft(page, note["id"])
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Cancel", exact=True).click()
+    expect(page.get_by_label("Note text")).to_have_value("still displayed after cancelling logout")
+    assert all_drafts(page, note["id"]), "dirty editor retained but recovery copy removed"
+
+
+def test_failed_logout_does_not_destroy_subsequent_edits(page):
+    note = create_note(page, unique("Failed logout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    expect(page.get_by_label("Note text")).to_be_visible()
+    page.route(
+        "**/api/logout",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body='{"code":"internal","detail":"Injected logout failure"}',
+        ),
+    )
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator(".toast.error")).to_contain_text("Injected logout failure")
+    page.get_by_label("Note text").fill("new work AFTER the failed logout")
+    page.wait_for_timeout(1000)
+    assert page.locator("#note-content").count() == 1, {
+        "url": page.url,
+        "drafts": all_drafts(page, note["id"]),
+        "session_status": page.request.get("api/session").status,
+    }
+
+
+@pytest.mark.parametrize("choice", ["Save", "Discard", "Cancel"])
+def test_logout_choices_preserve_work_until_committed(page, choice):
+    note = create_note(page, unique("Logout choices"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("unsaved choice text")
+    wait_for_draft(page, note["id"])
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name=choice, exact=True).click()
+    if choice != "Cancel":
+        page.locator("dialog[open]").get_by_role("button", name="Cancel", exact=True).click()
+    expect(page.get_by_label("Note text")).to_have_value("unsaved choice text")
+    assert page.request.get("api/session").status == 200
+    if choice == "Save":
+        assert api(page, "GET", f"api/notes/{note['id']}")["content"] == "unsaved choice text"
+    else:
+        assert all_drafts(page, note["id"])[0]["content"] == "unsaved choice text"
+
+
+def test_network_logout_failure_preserves_both_tabs_and_retry(context, page):
+    note = create_note(page, unique("Network logout"), "server")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    other = context.new_page()
+    other.goto(route)
+    expect(other.get_by_label("Note text")).to_be_visible()
+    page.get_by_label("Note text").fill("first draft")
+    other.get_by_label("Note text").fill("second draft")
+    eventually(lambda: len(all_drafts(page, note["id"])) == 2, "both drafts missing")
+    page.route("**/api/logout", lambda request: request.abort())
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator(".toast.error")).to_contain_text("Cannot reach")
+    page.get_by_label("Note text").fill("still editable")
+    eventually(
+        lambda: (
+            {d["content"] for d in all_drafts(page, note["id"])}
+            == {"still editable", "second draft"}
+        ),
+        "drafts not preserved after failure",
+    )
+    expect(other.get_by_label("Note text")).to_have_value("second draft")
+    page.unroute("**/api/logout")
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    expect(other.get_by_label("Username")).to_be_visible()
+    assert all_drafts(page, note["id"]) == []
+
+
+def test_pending_logout_blocks_edits_and_recovers_on_failure(page):
+    note = create_note(page, unique("Pending logout"), "server")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    expect(page.get_by_label("Note text")).to_be_visible()
+    held = []
+    page.route("**/api/logout", lambda route: held.append(route))
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator("main")).to_have_js_property("inert", True)
+    page.keyboard.type("should not be inserted")
+    expect(page.get_by_label("Note text")).to_have_value("server")
+    page.evaluate("location.hash = '#/tags'")
+    expect(page).to_have_url(re.compile(re.escape(route) + "$"))
+    assert len(held) == 1
+    held[0].fulfill(
+        status=500, content_type="application/json", body='{"code":"internal","detail":"Try again"}'
+    )
+    expect(page.locator("main")).to_have_js_property("inert", False)
+    page.get_by_label("Note text").fill("recovered editing")
+    assert wait_for_draft(page, note["id"])["content"] == "recovered editing"
+
+
+def test_cross_tab_logout_closes_recovery_dialog(context, page):
+    note = create_note(page, unique("Dialog logout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("draft")
+    wait_for_draft(page, note["id"])
+    other = context.new_page()
+    other.goto(f"#/note/{note['id']}/edit")
+    expect(other.locator("dialog[open]")).to_be_visible()
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(other.get_by_label("Username")).to_be_visible()
+    expect(other.locator("dialog")).to_have_count(0)
+    assert all_drafts(other, note["id"]) == []

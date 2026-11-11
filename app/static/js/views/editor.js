@@ -388,11 +388,11 @@ export async function editorView({ id, query }, app) {
   }
 
   /** Ask what to do with unsaved changes; resolves to true if it is fine to leave. */
-  async function resolveUnsaved() {
+  async function resolveUnsaved({ deferDiscard = false } = {}) {
     if (state.leaving || !isDirty()) return true;
     const choice = await askSaveChanges();
     if (choice === "save") return save();
-    if (choice === "discard") await dropDraft();
+    if (choice === "discard" && !deferDiscard) await dropDraft();
     return choice === "discard";
   }
 
@@ -618,6 +618,7 @@ export async function editorView({ id, query }, app) {
       return false;
     },
     canLeave: resolveUnsaved,
+    prepareLogout: () => resolveUnsaved({ deferDiscard: true }),
     destroy() {
       destroyed = true;
       if (draftTimer) writeDraft();
