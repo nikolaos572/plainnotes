@@ -118,13 +118,13 @@ def _temp_name() -> str:
     return TEMP_PREFIX + secrets.token_hex(8)
 
 
-def create_temp_file(directory: Path) -> tuple[int, Path]:
+def create_temp_file(directory: Path, *, mode: int = 0o666) -> tuple[int, Path]:
     """Create a new, empty temp file with an exclusive create; return its fd and path."""
     while True:
         path = directory / _temp_name()
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC
-            return os.open(path, flags, 0o666), path
+            return os.open(path, flags, mode), path
         except FileExistsError:
             continue
 
@@ -170,9 +170,9 @@ def fsync_file(path: Path) -> None:
         os.close(fd)
 
 
-def atomic_write(target: Path, data: bytes) -> None:
+def atomic_write(target: Path, data: bytes, *, mode: int = 0o666) -> None:
     """Replace target with data so that a crash leaves either the old or the new file."""
-    fd, temp = create_temp_file(target.parent)
+    fd, temp = create_temp_file(target.parent, mode=mode)
     try:
         with os.fdopen(fd, "wb") as file:
             file.write(data)
@@ -241,15 +241,17 @@ def replace_with_history(target: Path, data: bytes, check_current: Callable[[], 
     Failed attempts may leave a proposed version in history; cleanup must never remove it.
     """
     history = target.parent / ".history"
-    history.mkdir(exist_ok=True)
+    history.mkdir(mode=0o700, exist_ok=True)
     if not is_real_dir(history):
         raise OSError(errno.EINVAL, "History is not a real directory")
+    # Also protect recovery artifacts retained by earlier releases.
+    history.chmod(0o700)
     fsync_dir(target.parent)
     version = history / secrets.token_hex(16)
-    version.mkdir()
+    version.mkdir(mode=0o700)
     fsync_dir(history)
     previous = version / target.name
-    atomic_write(previous, data)
+    atomic_write(previous, data, mode=0o600)
     mode = target.lstat().st_mode
     if not stat.S_ISREG(mode):
         raise OSError(errno.EINVAL, "Note is not a regular file")

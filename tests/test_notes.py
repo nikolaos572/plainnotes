@@ -448,8 +448,8 @@ def test_external_write_during_preparation_is_conflict(data_dir, monkeypatch):
     note = notes.create_note(data_dir, "Race", "original")
     write = fsutil.atomic_write
 
-    def race(path, data):
-        write(path, data)
+    def race(path, data, **kwargs):
+        write(path, data, **kwargs)
         note.ref.path.write_bytes(b"external")
 
     monkeypatch.setattr(fsutil, "atomic_write", race)
