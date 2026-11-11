@@ -18,7 +18,7 @@ data/
 ```
 
 - **Edit files directly** with any editor or sync tool. plainnotes reads the disk on every request, so changes, renamed files and new attachments appear on the next page load. Changes detected before saving show a conflict dialog. Avoid simultaneous writes with external editors: they do not participate in the app lock. Content saves retain the exact displaced file under the note folder’s hidden .history/ directory, including an external version replaced at the final instant.
-- **Import existing notes** by placing `.md` files directly in the data folder. On the next start or page load, each one is moved into a new note folder (the file itself and its date stay unchanged). Files whose name is not a valid title, or whose title is already used, stay where they are. Try it on a copy of your files first.
+- **Import existing notes** (in writable mode) by placing `.md` files directly in the data folder. On the next start or page load, each one is moved into a new note folder (the file itself and its date stay unchanged). Files whose name is not a valid title, or whose title is already used, stay where they are. Try it on a copy of your files first.
 - **Back up** by copying the whole data folder; it contains everything.
 - **The trash:** deleting a note moves its folder, with its attachments, to `.trash/`. From the Trash page you can restore it or delete it permanently. Nothing is purged automatically.
 - **Titles** are unique (ignoring case) and cannot contain `/ \ : * ? " < > |` or start with `.`.
@@ -62,7 +62,6 @@ In the editor, upload files with the button, by dragging them onto the editor or
 | `Esc` | editor | Close (asks about unsaved changes) |
 | `Tab` / `Shift` + `Tab` | editor text | Insert a tab / move focus out |
 
- 
 ## Recovering previous content
 
 Every content change retains the displaced file in `data/<note-id>/.history/<random-id>/<title>.md`.
