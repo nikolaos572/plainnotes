@@ -148,6 +148,9 @@ def _folder(ref: notes.NoteRef, create: bool = False) -> Path:
         folder.mkdir(exist_ok=True)
     if not fsutil.is_real_dir(folder):
         raise notes.NotFound
+    if create:
+        # Also sync on retry: a previous mkdir may have succeeded before its sync failed.
+        fsutil.fsync_dir(ref.folder)
     return folder
 
 

@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import attachments, fsutil
+from app import attachments, fsutil, notes
 from tests.conftest import CSRF, PASSWORD, USERNAME, login
 
 SANDBOX_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
@@ -319,3 +319,44 @@ def test_attachments_move_to_trash_with_the_note(
     client.delete(f"/api/notes/{note_id}")
     [entry] = list((data_root / ".trash").iterdir())
     assert (entry / "attachments" / "keep.png").exists()
+
+
+def test_first_attachment_syncs_new_directory_parent(data_dir, monkeypatch):
+    note = notes.create_note(data_dir, "Attachment durability", "content")
+    calls = []
+    sync = fsutil.fsync_dir
+
+    def trace(path):
+        calls.append(path)
+        return sync(path)
+
+    monkeypatch.setattr(fsutil, "fsync_dir", trace)
+    upload = attachments.Upload(data_dir, note.ref.id)
+    upload.write(b"first attachment")
+    upload.finish(data_dir, "first.txt")
+    assert calls[0] == note.ref.folder
+    assert note.ref.folder / "attachments" in calls
+
+
+def test_attachment_parent_sync_failure_is_retried(data_dir, monkeypatch):
+    note = notes.create_note(data_dir, "Retry upload", "content")
+    sync = fsutil.fsync_dir
+    attempts = []
+
+    def fail_parent(path):
+        if path == note.ref.folder:
+            attempts.append(path)
+            raise OSError(errno.EIO, "injected parent sync failure")
+        sync(path)
+
+    monkeypatch.setattr(fsutil, "fsync_dir", fail_parent)
+    for _ in range(2):
+        with pytest.raises(OSError):
+            attachments.Upload(data_dir, note.ref.id)
+        assert list((note.ref.folder / "attachments").iterdir()) == []
+    assert len(attempts) == 2
+    monkeypatch.setattr(fsutil, "fsync_dir", sync)
+    upload = attachments.Upload(data_dir, note.ref.id)
+    upload.write(b"complete")
+    upload.finish(data_dir, "retry.txt")
+    assert (note.ref.folder / "attachments" / "retry.txt").read_bytes() == b"complete"
