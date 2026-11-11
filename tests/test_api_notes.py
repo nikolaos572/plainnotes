@@ -124,7 +124,7 @@ def test_revision_conflict(client: TestClient, data_root: Path) -> None:
     assert body["code"] == "revision_conflict"
     assert body["current"]["content"] == "changed elsewhere"
     assert body["current"]["title"] == "Shared"
-    assert body["current"]["revision"] == notes.revision_of(b"changed elsewhere")
+    assert body["current"]["revision"] == notes.revision_of(b"changed elsewhere", "Shared")
     assert body["current"]["modified"].endswith("Z")
     assert path.read_text() == "changed elsewhere"
     overwrite = client.put(

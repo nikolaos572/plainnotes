@@ -120,7 +120,7 @@ def test_create_and_read(data_dir: DataDir) -> None:
     assert path.read_bytes() == b"hello\n"
     again = notes.read_note(data_dir, note.ref.id)
     assert again.content == "hello\n"
-    assert again.revision == note.revision == notes.revision_of(b"hello\n")
+    assert again.revision == note.revision == notes.revision_of(b"hello\n", "First note")
     assert [p.name for p in data_dir.root.iterdir()] == [note.ref.id]
 
 
@@ -387,3 +387,16 @@ def test_legacy_import_staging_is_not_deleted(data_dir):
     (staging / "Original.md").write_bytes(b"only copy")
     notes.cleanup_temp_files(data_dir)
     assert (staging / "Original.md").read_bytes() == b"only copy"
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_rename_invalidates_stale_revision(data_dir, external):
+    original = notes.create_note(data_dir, "Original", "same")
+    if external:
+        original.ref.path.rename(original.ref.path.with_name("Renamed.md"))
+    else:
+        notes.update_note(data_dir, original.ref.id, "Renamed", "same", original.revision)
+    with pytest.raises(notes.RevisionConflict) as conflict:
+        notes.update_note(data_dir, original.ref.id, "Original", "stale edit", original.revision)
+    assert conflict.value.current.ref.title == "Renamed"
+    assert notes.read_note(data_dir, original.ref.id).content == "same"

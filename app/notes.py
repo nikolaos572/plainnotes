@@ -146,9 +146,10 @@ def _is_note_filename(name: str) -> bool:
     return name.endswith(".md") and is_valid_title(name[:-3])
 
 
-def revision_of(data: bytes) -> str:
-    """The revision of a file's bytes: their SHA-256 hex digest."""
-    return hashlib.sha256(data).hexdigest()
+def revision_of(data: bytes, title: str) -> str:
+    """Hash both title and content with an unambiguous length-prefixed title."""
+    name = title.encode("utf-8")
+    return hashlib.sha256(len(name).to_bytes(8, "big") + name + data).hexdigest()
 
 
 def encode_content(content: str) -> bytes:
@@ -246,7 +247,7 @@ def read_note(data_dir: DataDir, note_id: str) -> Note:
     """Read one note; raise NotFound or NotUtf8."""
     ref = find_note(data_dir, note_id)
     data, content = _load(ref)
-    return Note(ref=ref, content=content, revision=revision_of(data))
+    return Note(ref=ref, content=content, revision=revision_of(data, ref.title))
 
 
 def _ensure_title_free(data_dir: DataDir, title: str, own_id: str | None = None) -> None:
@@ -276,7 +277,7 @@ def create_note(data_dir: DataDir, title: str, content: str) -> Note:
             raise
         fsutil.fsync_dir(data_dir.root)
         ref = find_note(data_dir, note_id)
-    return Note(ref=ref, content=content, revision=revision_of(data))
+    return Note(ref=ref, content=content, revision=revision_of(data, ref.title))
 
 
 def update_note(
@@ -287,7 +288,7 @@ def update_note(
     with data_dir.lock:
         ref = find_note(data_dir, note_id)
         current_data, current_content = _load(ref)
-        current = Note(ref=ref, content=current_content, revision=revision_of(current_data))
+        current = Note(ref=ref, content=current_content, revision=revision_of(current_data, ref.title))
         if current.revision != base_revision:
             raise RevisionConflict(current)
         new_title = ref.title if title == ref.title else clean_title(title)
@@ -301,7 +302,7 @@ def update_note(
             ref.path.rename(fsutil.safe_child(ref.folder, new_title + ".md", _is_note_filename))
             fsutil.fsync_dir(ref.folder)
         ref = find_note(data_dir, note_id)
-    return Note(ref=ref, content=content, revision=revision_of(data))
+    return Note(ref=ref, content=content, revision=revision_of(data, ref.title))
 
 
 def trash_dir(data_dir: DataDir) -> Path:

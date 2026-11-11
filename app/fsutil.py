@@ -197,8 +197,9 @@ def remove_temp_entries(folder: Path, *, preserve_dirs: bool = False) -> int:
         try:
             if entry.is_dir(follow_symlinks=False):
                 if preserve_dirs:
-                    continue
-                shutil.rmtree(entry.path)
+                    os.rmdir(entry.path)  # Only empty legacy staging directories are disposable.
+                else:
+                    shutil.rmtree(entry.path)
             else:
                 os.unlink(entry.path)
             removed += 1
