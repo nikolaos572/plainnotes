@@ -22,7 +22,7 @@ data/
 - **Back up** by copying the whole data folder; it contains everything.
 - **The trash:** deleting a note moves its folder, with its attachments, to `.trash/`. From the Trash page you can restore it or delete it permanently. Nothing is purged automatically.
 - **Titles** are unique (ignoring case) and cannot contain `/ \ : * ? " < > |` or start with `.`.
-- **Line endings:** files with Windows line endings (`\r\n`) keep them when you save. A file with mixed line endings is saved with `\r\n` throughout once you edit it.
+- **Line endings:** changing only the title preserves every content byte. Text edits preserve uniform LF, CRLF, or lone-CR line endings. Mixed line endings normalize to CRLF if the original contains CRLF, otherwise LF. Recovery drafts retain this information.
 - **No index:** every search and every list reads the notes from disk, so they always match the files. This stays fast up to a few thousand notes.
 
 ## Viewing and editing

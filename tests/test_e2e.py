@@ -1147,3 +1147,27 @@ def test_draft_installation_namespaces(page):
         return isolated && retained;
     }""")
     assert result
+
+
+@pytest.mark.parametrize("content", ["a\rb\r", "a\r\nb\n", "a\nb\n"])
+def test_title_only_edit_preserves_exact_content(page, server, content):
+    note = create_note(page, unique("Raw bytes"), content)
+    page.goto(f"#/note/{note['id']}/edit")
+    title = note["title"] + " renamed"
+    page.get_by_label("Title").fill(title)
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    assert (server.data / note["id"] / (title + ".md")).read_bytes() == content.encode()
+
+
+def test_lone_cr_edits_and_draft_recovery_preserve_convention(context, page, server):
+    note = create_note(page, unique("CR recovery"), "a\rb\r")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    page.get_by_label("Note text").fill("a\nb\nc\n")
+    wait_for_draft(page, note["id"])
+    recovered, _ = reopen(context, page, route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    recovered.keyboard.press("Control+s")
+    expect(recovered.locator(".dirty-dot")).to_be_hidden()
+    assert note_file(server, note).read_bytes() == b"a\rb\rc\r"

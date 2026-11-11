@@ -113,8 +113,11 @@ export async function editorView({ id, query }, app) {
   const state = {
     id: note?.id ?? id ?? null,
     revision: note?.revision ?? null,
-    // Browsers turn every line break in a textarea into \n; remember to restore \r\n on save.
-    crlf: note?.content.includes("\r\n") ?? false,
+    // Retain raw bytes when only the title changes, and the convention for text edits.
+    rawContent: "",
+    rawValue: "",
+    loadedContent: "",
+    lineEnding: "\n",
     loadedTitle: "",
     loadedValue: "",
     saving: false,
@@ -154,10 +157,25 @@ export async function editorView({ id, query }, app) {
     // Compare against the textarea's own value, so line endings it normalized don't count.
     state.loadedTitle = titleInput.value;
     state.loadedValue = textarea.value;
+    state.loadedContent = content;
+    rememberRaw(content, textarea.value);
+  }
+
+  function rememberRaw(content, value) {
+    state.rawContent = content;
+    state.rawValue = value;
+    state.lineEnding = content.includes("\r\n") ? "\r\n"
+      : content.includes("\r") && !content.includes("\n") ? "\r" : "\n";
+  }
+
+  function contentForSave() {
+    const value = textarea.value;
+    return value === state.rawValue ? state.rawContent : value.replace(/\n/g, state.lineEnding);
   }
 
   function isDirty() {
-    return titleInput.value !== state.loadedTitle || textarea.value !== state.loadedValue;
+    return titleInput.value !== state.loadedTitle || textarea.value !== state.loadedValue
+      || contentForSave() !== state.loadedContent;
   }
 
   function refresh() {
@@ -199,7 +217,10 @@ export async function editorView({ id, query }, app) {
     clearTimeout(draftTimer);
     draftTimer = null;
     const noteId = state.id;
-    const draft = { title: titleInput.value, content: textarea.value, base_revision: state.revision };
+    const draft = {
+      title: titleInput.value, content: textarea.value, base_revision: state.revision,
+      rawContent: contentForSave(),
+    };
     const dirty = isDirty();
     return queueDraft((editor) => dirty
       ? drafts.saveDraft(noteId, draft, editor)
@@ -229,7 +250,8 @@ export async function editorView({ id, query }, app) {
       const candidates = await drafts.loadDrafts(state.id);
       for (const draft of candidates) {
         if (destroyed) return;
-        if (draft.title === state.loadedTitle && draft.content === state.loadedValue) {
+        if (draft.title === state.loadedTitle && draft.content === state.loadedValue
+            && (draft.rawContent ?? state.loadedContent) === state.loadedContent) {
           await drafts.discardDraft(draft);
           continue;
         }
@@ -248,6 +270,8 @@ export async function editorView({ id, query }, app) {
         if (choice === "restore") {
           titleInput.value = draft.title;
           textarea.value = draft.content;
+          const raw = draft.rawContent ?? draft.content.replace(/\n/g, state.lineEnding);
+          rememberRaw(raw, textarea.value);
           state.revision = draft.base_revision ?? state.revision;
           restoredDraft = draft;
           refresh();
@@ -272,6 +296,8 @@ export async function editorView({ id, query }, app) {
     if (titleInput.value === sentTitle) titleInput.value = saved.title;
     state.loadedTitle = saved.title;
     state.loadedValue = sentValue;
+    state.loadedContent = saved.content;
+    rememberRaw(saved.content, sentValue);
     if (wasNew && !destroyed) {
       app.replaceRoute(`#/note/${encodeURIComponent(saved.id)}/edit`);
     }
@@ -281,11 +307,12 @@ export async function editorView({ id, query }, app) {
       if (wasNew) await drafts.removeDraft(oldId, editor);
       if (movedDraftId !== null) {
         await drafts.removeDraft(movedDraftId, editor);
-        await drafts.removeMatchingDrafts(movedDraftId, saved.title, sentValue);
+        await drafts.removeMatchingDrafts(movedDraftId, saved.title, sentValue, saved.content);
         movedDraftId = null;
       }
-      await drafts.removeMatchingDrafts(oldId, saved.title, sentValue);
-      if (restoredDraft?.content === sentValue && restoredDraft?.title === saved.title) {
+      await drafts.removeMatchingDrafts(oldId, saved.title, sentValue, saved.content);
+      if (restoredDraft?.content === sentValue && restoredDraft?.title === saved.title
+          && (restoredDraft.rawContent === undefined || restoredDraft.rawContent === saved.content)) {
         await drafts.discardDraft(restoredDraft);
         restoredDraft = null;
       }
@@ -297,7 +324,7 @@ export async function editorView({ id, query }, app) {
     for (;;) {
       const title = titleInput.value;
       const value = textarea.value;
-      const content = state.crlf ? value.replace(/\n/g, "\r\n") : value;
+      const content = contentForSave();
       titleError.textContent = "";
       try {
         const saved = state.id
@@ -323,7 +350,6 @@ export async function editorView({ id, query }, app) {
             ))
           ) {
             state.revision = current.revision;
-            state.crlf = current.content.includes("\r\n");
             load(current.title, current.content);
             dropDraft();
             refresh();

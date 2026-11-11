@@ -137,16 +137,19 @@ export async function discardDraft(draft) {
     onSuccess(request, () => {
       const current = request.result;
       if (current?.saved_at === draft.saved_at && current?.content === draft.content
-          && current?.title === draft.title) store.delete(draft.key);
+          && current?.title === draft.title && current?.rawContent === draft.rawContent) store.delete(draft.key);
     });
   });
 }
 
 /** Identical text is safely on the server; independent different drafts must remain. */
-export async function removeMatchingDrafts(noteId, title, content) {
+export async function removeMatchingDrafts(noteId, title, content, rawContent) {
   const records = await loadDrafts(noteId);
   for (const record of records) {
-    if (record.title === title && record.content === content) await discardDraft(record);
+    if (record.title === title && record.content === content
+        && (record.rawContent === undefined || record.rawContent === rawContent)) {
+      await discardDraft(record);
+    }
   }
 }
 
