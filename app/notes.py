@@ -332,7 +332,8 @@ def delete_note(data_dir: DataDir, note_id: str, now: datetime | None = None) ->
 
 def cleanup_temp_files(data_dir: DataDir) -> None:
     """Startup cleanup: remove leftover temp entries at the top level and inside note folders."""
-    removed = fsutil.remove_temp_entries(data_dir.root)
+    # Older releases moved original imports into these directories. Never delete them.
+    removed = fsutil.remove_temp_entries(data_dir.root, preserve_dirs=True)
     with os.scandir(data_dir.root) as entries:
         folders = [
             Path(entry.path)
@@ -389,17 +390,24 @@ def _import_one(data_dir: DataDir, name: str, taken: set[str]) -> None:
         return
     if not fsutil.is_real_file(source):
         return
-    temp = fsutil.create_temp_dir(data_dir.root)
-    try:
-        source.rename(temp / name)
+    # A crash leaves the original loose file or a complete note, never the only
+    # copy inside a staging directory that startup cleanup deletes.
+    while True:
         note_id = new_id(mtime_moment(mtime), _id_taken(data_dir))
-        temp.rename(data_dir.root / note_id)
+        folder = data_dir.root / note_id
+        try:
+            folder.mkdir()
+            break
+        except FileExistsError:
+            continue
+    fsutil.fsync_dir(data_dir.root)
+    try:
+        source.rename(folder / name)
     except OSError:
-        if os.path.lexists(temp / name):
-            (temp / name).rename(source)
-        shutil.rmtree(temp, ignore_errors=True)
+        folder.rmdir()
         data_dir.warn_once(logger, "Could not import %r", name)
         return
+    fsutil.fsync_dir(folder)
     fsutil.fsync_dir(data_dir.root)
     taken.add(title_key(title))
     logger.info("Imported %r as note %s", name, note_id)

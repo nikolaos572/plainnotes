@@ -295,7 +295,7 @@ def test_cleanup_temp_files(data_dir: DataDir, make_note: Callable) -> None:
     other.mkdir()
     (other / ".plainnotes-tmp-x").write_text("not ours to touch")
     notes.cleanup_temp_files(data_dir)
-    assert sorted(p.name for p in root.iterdir()) == [ID, "unrelated"]
+    assert sorted(p.name for p in root.iterdir()) == [".plainnotes-tmp-abc", ID, "unrelated"]
     assert sorted(p.name for p in path.parent.iterdir()) == ["Keep.md", "attachments"]
     assert [p.name for p in attachments.iterdir()] == ["real.txt"]
     assert (other / ".plainnotes-tmp-x").exists()
@@ -354,3 +354,36 @@ def test_paths_never_leave_data_folder(data_dir: DataDir, tmp_path: Path) -> Non
     for bad in ["../secret.md", "/etc/passwd", "..", "%2e%2e"]:
         with pytest.raises(notes.NotFound):
             notes.read_note(data_dir, bad)
+
+
+@pytest.mark.parametrize("after_move", [False, True])
+def test_interrupted_import_survives_cleanup(data_dir, monkeypatch, after_move):
+    original = data_dir.root / "Original.md"
+    original.write_bytes(b"only copy")
+    rename = Path.rename
+
+    def interrupt(path, target):
+        if path == original:
+            if after_move:
+                rename(path, target)
+            raise KeyboardInterrupt
+        return rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        notes.import_loose_files(data_dir)
+    notes.cleanup_temp_files(data_dir)
+    copies = list(data_dir.root.rglob("Original.md"))
+    assert len(copies) == 1
+    assert copies[0].read_bytes() == b"only copy"
+    monkeypatch.undo()
+    notes.import_loose_files(data_dir)
+    assert [ref.path.read_bytes() for ref in notes.list_notes(data_dir)] == [b"only copy"]
+
+
+def test_legacy_import_staging_is_not_deleted(data_dir):
+    staging = data_dir.root / ".plainnotes-tmp-legacy"
+    staging.mkdir()
+    (staging / "Original.md").write_bytes(b"only copy")
+    notes.cleanup_temp_files(data_dir)
+    assert (staging / "Original.md").read_bytes() == b"only copy"

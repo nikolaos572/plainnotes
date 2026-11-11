@@ -173,7 +173,7 @@ def atomic_write(target: Path, data: bytes) -> None:
     fsync_dir(target.parent)
 
 
-def remove_temp_entries(folder: Path) -> int:
+def remove_temp_entries(folder: Path, *, preserve_dirs: bool = False) -> int:
     """Delete leftover temp files and folders directly inside folder; return how many."""
     removed = 0
     try:
@@ -185,6 +185,8 @@ def remove_temp_entries(folder: Path) -> int:
             continue
         try:
             if entry.is_dir(follow_symlinks=False):
+                if preserve_dirs:
+                    continue
                 shutil.rmtree(entry.path)
             else:
                 os.unlink(entry.path)
