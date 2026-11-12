@@ -32,6 +32,7 @@ data/
 - **Pinned notes:** add the tag `#pinned` anywhere in a note to list it in a **Pinned** section at the top of the home page. Remove the tag to unpin it.
 - **Deleting:** **Delete** moves the note to the trash; the message that follows has an **Undo** button for a few seconds.
 - **Drafts:** each editor keeps an independent recovery draft in this browser, including separate new-note tabs. Recovery is offered when you reopen the editor, even if the original note was deleted. A persistent warning appears if storage fails. Drafts are written shortly after typing pauses; the newest keystrokes may not survive an immediate crash, so save valuable work explicitly. Identical drafts are removed after that text is saved, while other versions remain until discarded. Discarding an editor copy does not delete the recovery record it was restored from; use Discard in the recovery dialog to delete that record explicitly. Logout asks before deleting this installation’s drafts and ending editing in its other tabs. Cancelling or a failed logout keeps drafts; editing pauses while the logout request is pending and resumes on failure or timeout.
+- **Upgrade:** the corrected session-key encoding requires signing in again once. Credential changes now invalidate old sessions even when values contain `|`.
 - **Printing:** printing a note (`Ctrl`/`Cmd` + `P`) leaves out the header and buttons, uses black on white in either theme, and wraps long lines so nothing is cut off.
 
 ## Markdown
