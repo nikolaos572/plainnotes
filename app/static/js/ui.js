@@ -177,3 +177,12 @@ export function errorPage(error) {
   if (error.code === "not_utf8") return messagePage("Cannot open this note", error.message);
   return messagePage("Something went wrong", error.message);
 }
+
+
+/** End view-owned dialogs when another tab ends the session. */
+export function dismissDialogs() {
+  for (const dialog of document.querySelectorAll("dialog[open]")) {
+    dialog.dispatchEvent(new Event("cancel"));
+    dialog.close();
+  }
+}

@@ -32,7 +32,7 @@ def main() -> None:
     configure_logging("INFO")
     try:
         settings = load_settings(os.environ)
-        check_data_dir(settings.data_dir)
+        check_data_dir(settings.data_dir, read_only=settings.read_only)
     except ConfigError as exc:
         logger.error("%s", exc)
         sys.exit(1)

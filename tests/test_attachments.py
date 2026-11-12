@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import attachments, fsutil
+from app import attachments, fsutil, notes
 from tests.conftest import CSRF, PASSWORD, USERNAME, login
 
 SANDBOX_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
@@ -319,3 +319,236 @@ def test_attachments_move_to_trash_with_the_note(
     client.delete(f"/api/notes/{note_id}")
     [entry] = list((data_root / ".trash").iterdir())
     assert (entry / "attachments" / "keep.png").exists()
+
+
+def test_first_attachment_syncs_new_directory_parent(data_dir, monkeypatch):
+    note = notes.create_note(data_dir, "Attachment durability", "content")
+    calls = []
+    sync = fsutil.fsync_dir
+
+    def trace(path):
+        calls.append(path)
+        return sync(path)
+
+    monkeypatch.setattr(fsutil, "fsync_dir", trace)
+    upload = attachments.Upload(data_dir, note.ref.id)
+    upload.write(b"first attachment")
+    upload.finish(data_dir, "first.txt")
+    assert calls[0] == note.ref.folder
+    assert note.ref.folder / "attachments" in calls
+
+
+def test_attachment_parent_sync_failure_is_retried(data_dir, monkeypatch):
+    note = notes.create_note(data_dir, "Retry upload", "content")
+    sync = fsutil.fsync_dir
+    attempts = []
+
+    def fail_parent(path):
+        if path == note.ref.folder:
+            attempts.append(path)
+            raise OSError(errno.EIO, "injected parent sync failure")
+        sync(path)
+
+    monkeypatch.setattr(fsutil, "fsync_dir", fail_parent)
+    for _ in range(2):
+        with pytest.raises(OSError):
+            attachments.Upload(data_dir, note.ref.id)
+        assert list((note.ref.folder / "attachments").iterdir()) == []
+    assert len(attempts) == 2
+    monkeypatch.setattr(fsutil, "fsync_dir", sync)
+    upload = attachments.Upload(data_dir, note.ref.id)
+    upload.write(b"complete")
+    upload.finish(data_dir, "retry.txt")
+    assert (note.ref.folder / "attachments" / "retry.txt").read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("error", [errno.ENOSPC, errno.EIO])
+def test_discard_unlinks_temp_even_when_close_fails(data_dir, error):
+    note = notes.create_note(data_dir, "Cleanup", "original")
+    upload = attachments.Upload(data_dir, note.ref.id)
+    original = upload.file
+
+    class BrokenClose:
+        def close(self):
+            original.close()
+            raise OSError(error, "injected close failure")
+
+    upload.file = BrokenClose()
+    expected = fsutil.StorageFull if error == errno.ENOSPC else OSError
+    with pytest.raises(expected):
+        upload.discard()
+    assert not upload.temp.exists()
+    assert note.ref.path.read_text() == "original"
+
+
+def test_publication_collision_preserves_external_file(client, note_id, data_root, monkeypatch):
+    publish = fsutil.rename_no_replace
+    calls = []
+
+    def collision(source, target):
+        calls.append(target.name)
+        if len(calls) == 1:
+            target.write_bytes(b"external file")
+        publish(source, target)
+
+    monkeypatch.setattr(fsutil, "rename_no_replace", collision)
+    response = upload(client, note_id, "race.txt", b"uploaded")
+    assert response.status_code == 201
+    assert response.json()["name"] == "race (1).txt"
+    assert calls == ["race.txt", "race (1).txt"]
+    assert (folder(data_root, note_id) / "race.txt").read_bytes() == b"external file"
+    assert (folder(data_root, note_id) / "race (1).txt").read_bytes() == b"uploaded"
+    assert not list(folder(data_root, note_id).glob(fsutil.TEMP_PREFIX + "*"))
+
+
+@pytest.mark.parametrize("error", [errno.EIO, errno.ENOSPC, errno.ENOSYS, errno.EOPNOTSUPP])
+def test_publication_failure_never_leaves_placeholder(
+    client, note_id, data_root, monkeypatch, error
+):
+    assert upload(client, note_id, "keep.txt", b"keep").status_code == 201
+
+    def fail(_source, _target):
+        raise OSError(error, "injected publication failure")
+
+    monkeypatch.setattr(fsutil, "rename_no_replace", fail)
+    response = upload(client, note_id, "failed.txt", b"complete body")
+    assert response.status_code == (507 if error == errno.ENOSPC else 500)
+    assert sorted(p.name for p in folder(data_root, note_id).iterdir()) == ["keep.txt"]
+    assert (folder(data_root, note_id) / "keep.txt").read_bytes() == b"keep"
+
+
+def test_publication_flushes_file_before_rename_and_directory_after(data_dir, monkeypatch):
+    import stat
+
+    note = notes.create_note(data_dir, "Sync ordering", "note")
+    transfer = attachments.Upload(data_dir, note.ref.id)
+    transfer.write(b"complete body")
+    calls = []
+    real_sync = os.fsync
+    real_publish = fsutil.rename_no_replace
+
+    def sync(fd):
+        calls.append("file" if stat.S_ISREG(os.fstat(fd).st_mode) else "directory")
+        real_sync(fd)
+
+    def publish(source, target):
+        assert source.read_bytes() == b"complete body"
+        assert not target.exists()
+        calls.append("publish")
+        real_publish(source, target)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(fsutil, "rename_no_replace", publish)
+    result = transfer.finish(data_dir, "complete.txt")
+    assert result.size == len(b"complete body")
+    assert calls == ["file", "publish", "directory"]
+
+
+def test_failed_post_publication_sync_does_not_delete_completed_file(
+    client,
+    note_id,
+    data_root,
+    monkeypatch,
+):
+    real_sync = fsutil.fsync_dir
+
+    def fail(folder_path):
+        if folder_path.name == "attachments":
+            raise OSError(errno.EIO, "injected directory sync failure")
+        real_sync(folder_path)
+
+    monkeypatch.setattr(fsutil, "fsync_dir", fail)
+    response = upload(client, note_id, "complete.txt", b"complete body")
+    assert response.status_code == 500
+    assert (folder(data_root, note_id) / "complete.txt").read_bytes() == b"complete body"
+    assert not list(folder(data_root, note_id).glob(fsutil.TEMP_PREFIX + "*"))
+
+
+def test_intentional_empty_upload_is_preserved(client, note_id, data_root):
+    response = upload(client, note_id, "empty.txt", b"")
+    assert response.status_code == 201
+    assert response.json()["size"] == 0
+    notes.cleanup_temp_files(client.app.state.data_dir)
+    assert (folder(data_root, note_id) / "empty.txt").read_bytes() == b""
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_process_crash_at_publication_never_leaves_empty_attachment(data_dir, stage):
+    import subprocess
+    import sys
+
+    note = notes.create_note(data_dir, "Crash publication", "unchanged")
+    directory = note.ref.folder / "attachments"
+    directory.mkdir()
+    (directory / "keep.txt").write_bytes(b"keep")
+    program = """
+import os, sys
+from pathlib import Path
+from app import attachments, fsutil
+data = fsutil.DataDir(Path(sys.argv[1]))
+transfer = attachments.Upload(data, sys.argv[2])
+transfer.write(b"complete upload")
+publish = fsutil.rename_no_replace
+def crash(source, target):
+    if sys.argv[3] == "after":
+        publish(source, target)
+    os._exit(77)
+fsutil.rename_no_replace = crash
+transfer.finish(data, "upload.bin")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(data_dir.root), note.ref.id, stage],
+        cwd=Path(__file__).resolve().parents[1],
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 77
+    notes.cleanup_temp_files(data_dir)
+    assert note.ref.path.read_bytes() == b"unchanged"
+    assert (directory / "keep.txt").read_bytes() == b"keep"
+    if stage == "before":
+        assert sorted(p.name for p in directory.iterdir()) == ["keep.txt"]
+    else:
+        assert sorted(p.name for p in directory.iterdir()) == ["keep.txt", "upload.bin"]
+        assert (directory / "upload.bin").read_bytes() == b"complete upload"
+
+
+@pytest.mark.parametrize("error", [errno.EIO, errno.ENOSPC])
+def test_failed_file_sync_never_publishes_attachment(
+    client, note_id, data_root, monkeypatch, error
+):
+    import stat
+
+    real_sync = os.fsync
+
+    def fail_file(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(error, "injected file sync failure")
+        real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_file)
+    response = upload(client, note_id, "failed.txt", b"complete body")
+    assert response.status_code == (507 if error == errno.ENOSPC else 500)
+    assert list(folder(data_root, note_id).iterdir()) == []
+
+
+def test_simultaneous_uploads_keep_both_contents(data_dir):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    note = notes.create_note(data_dir, "Concurrent uploads", "note")
+    ready = Barrier(2)
+
+    def send(body):
+        transfer = attachments.Upload(data_dir, note.ref.id)
+        transfer.write(body)
+        ready.wait(timeout=10)
+        return transfer.finish(data_dir, "same.txt")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(send, b"first")
+        second = executor.submit(send, b"second")
+        results = [first.result(timeout=20), second.result(timeout=20)]
+    assert {item.name for item in results} == {"same.txt", "same (1).txt"}
+    directory = note.ref.folder / "attachments"
+    assert {path.read_bytes() for path in directory.iterdir()} == {b"first", b"second"}

@@ -148,6 +148,9 @@ def _folder(ref: notes.NoteRef, create: bool = False) -> Path:
         folder.mkdir(exist_ok=True)
     if not fsutil.is_real_dir(folder):
         raise notes.NotFound
+    if create:
+        # Also sync on retry: a previous mkdir may have succeeded before its sync failed.
+        fsutil.fsync_dir(ref.folder)
     return folder
 
 
@@ -193,8 +196,13 @@ class Upload:
 
     def discard(self) -> None:
         """Close and delete the temp file."""
-        self.file.close()
-        self.temp.unlink(missing_ok=True)
+        try:
+            self.file.close()
+        except OSError as exc:
+            fsutil.raise_if_full(exc)
+            raise
+        finally:
+            self.temp.unlink(missing_ok=True)
 
     def finish(self, data_dir: DataDir, requested_name: str) -> AttachmentInfo:
         """Move the temp file to a free final name; never overwrites an existing file."""
@@ -214,16 +222,14 @@ class Upload:
                 final = unique_name(name, taken)
                 path = fsutil.safe_child(self.folder, final, is_final_name)
                 try:
-                    fsutil.reserve(path)
+                    fsutil.rename_no_replace(self.temp, path)
                 except FileExistsError:
                     taken.add(name_key(final))
                     continue
+                except OSError as exc:
+                    fsutil.raise_if_full(exc)
+                    raise
                 break
-            try:
-                os.replace(self.temp, path)
-            except OSError:
-                path.unlink(missing_ok=True)
-                raise
             fsutil.fsync_dir(self.folder)
         info = path.lstat()
         return AttachmentInfo(final, info.st_size, notes.mtime_moment(info.st_mtime))

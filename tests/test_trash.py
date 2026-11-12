@@ -142,3 +142,18 @@ def test_symlinked_trash_folder(
     make_note("Kept", "x", note_id="20260101-000000-kept")
     assert client.delete("/api/notes/20260101-000000-kept").status_code == 500
     assert (data_root / "20260101-000000-kept" / "Kept.md").exists()
+
+
+def test_trash_moves_sync_both_parents(data_dir, monkeypatch):
+    from app import fsutil, notes, trash
+
+    note = notes.create_note(data_dir, "Durable", "content")
+    synced = []
+    monkeypatch.setattr(fsutil, "fsync_dir", synced.append)
+    trash_id = notes.delete_note(data_dir, note.ref.id)
+    assert data_dir.root in synced
+    assert data_dir.root / ".trash" in synced
+    synced.clear()
+    trash.restore(data_dir, trash_id)
+    assert data_dir.root in synced
+    assert data_dir.root / ".trash" in synced

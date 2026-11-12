@@ -104,6 +104,7 @@ def restore(data_dir: DataDir, trash_id: str) -> notes.NoteRef:
                 f"Another note is called “{title}”. Rename that note first, then restore."
             )
         folder.rename(target)
+        fsutil.fsync_dir(folder.parent)
         fsutil.fsync_dir(data_dir.root)
         return notes.find_note(data_dir, note_id)
 
@@ -111,11 +112,15 @@ def restore(data_dir: DataDir, trash_id: str) -> notes.NoteRef:
 def delete_permanently(data_dir: DataDir, trash_id: str) -> None:
     """Delete one trash entry and everything in it."""
     with data_dir.lock:
-        shutil.rmtree(_entry_folder(data_dir, trash_id))
+        folder = _entry_folder(data_dir, trash_id)
+        shutil.rmtree(folder)
+        fsutil.fsync_dir(folder.parent)
 
 
 def empty(data_dir: DataDir) -> None:
     """Delete every entry in the trash."""
     with data_dir.lock:
         for entry in list_trash(data_dir):
-            shutil.rmtree(_entry_folder(data_dir, entry.trash_id))
+            folder = _entry_folder(data_dir, entry.trash_id)
+            shutil.rmtree(folder)
+            fsutil.fsync_dir(folder.parent)

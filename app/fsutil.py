@@ -3,6 +3,7 @@
 Every path derived from user input is built with safe_child(); nothing here follows symlinks.
 """
 
+import ctypes
 import errno
 import logging
 import os
@@ -19,6 +20,9 @@ MAX_NAME_BYTES = 255
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+_RENAME_EXCHANGE = 2
 _FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 
@@ -35,9 +39,14 @@ class DataDir:
     """The data folder plus the per-app lock and the set of warnings already logged."""
 
     root: Path
+    read_only: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
     _warned: set[str] = field(default_factory=set)
     _warned_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        """Bind the administrator-configured root once; children still reject symlinks."""
+        self.root = self.root.resolve(strict=True)
 
     def warn_once(self, logger: logging.Logger, message: str, *args: object) -> None:
         """Log a warning the first time this exact message occurs in this process."""
@@ -112,20 +121,15 @@ def _temp_name() -> str:
     return TEMP_PREFIX + secrets.token_hex(8)
 
 
-def create_temp_file(directory: Path) -> tuple[int, Path]:
+def create_temp_file(directory: Path, *, mode: int = 0o666) -> tuple[int, Path]:
     """Create a new, empty temp file with an exclusive create; return its fd and path."""
     while True:
         path = directory / _temp_name()
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC
-            return os.open(path, flags, 0o666), path
+            return os.open(path, flags, mode), path
         except FileExistsError:
             continue
-
-
-def reserve(path: Path) -> None:
-    """Create an empty file with an exclusive create; raise FileExistsError if path exists."""
-    os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o666))
 
 
 def create_temp_dir(parent: Path) -> Path:
@@ -141,29 +145,40 @@ def create_temp_dir(parent: Path) -> Path:
 
 def fsync_dir(path: Path) -> None:
     """Flush a folder's entries to disk; ignored where the filesystem does not support it."""
+    fd = os.open(path, os.O_RDONLY | _CLOEXEC | _NOFOLLOW)
     try:
-        fd = os.open(path, os.O_RDONLY | _CLOEXEC)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.ENOSYS}:
+                raise_if_full(exc)
+                raise
     finally:
         os.close(fd)
 
 
-def atomic_write(target: Path, data: bytes) -> None:
+def fsync_file(path: Path) -> None:
+    """Flush an imported regular file without following symlinks."""
+    fd = os.open(path, os.O_RDONLY | _CLOEXEC | _NOFOLLOW | _NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write(target: Path, data: bytes, *, mode: int = 0o666) -> None:
     """Replace target with data so that a crash leaves either the old or the new file."""
-    fd, temp = create_temp_file(target.parent)
+    fd, temp = create_temp_file(target.parent, mode=mode)
     try:
         with os.fdopen(fd, "wb") as file:
             file.write(data)
             file.flush()
             os.fsync(file.fileno())
-            mode = _lstat_mode(target)
-            if mode is not None and stat.S_ISREG(mode):
-                os.fchmod(file.fileno(), stat.S_IMODE(mode))
+            target_mode = _lstat_mode(target)
+            if target_mode is not None and stat.S_ISREG(target_mode):
+                os.fchmod(file.fileno(), stat.S_IMODE(target_mode))
         os.replace(temp, target)
     except BaseException as exc:
         temp.unlink(missing_ok=True)
@@ -173,7 +188,7 @@ def atomic_write(target: Path, data: bytes) -> None:
     fsync_dir(target.parent)
 
 
-def remove_temp_entries(folder: Path) -> int:
+def remove_temp_entries(folder: Path, *, preserve_dirs: bool = False) -> int:
     """Delete leftover temp files and folders directly inside folder; return how many."""
     removed = 0
     try:
@@ -185,10 +200,73 @@ def remove_temp_entries(folder: Path) -> int:
             continue
         try:
             if entry.is_dir(follow_symlinks=False):
-                shutil.rmtree(entry.path)
+                if preserve_dirs:
+                    os.rmdir(entry.path)  # Only empty legacy staging directories are disposable.
+                else:
+                    shutil.rmtree(entry.path)
             else:
                 os.unlink(entry.path)
             removed += 1
         except OSError:
             continue
     return removed
+
+
+def _renameat2(first: Path, second: Path, flags: int) -> None:
+    """Call Linux renameat2; never emulate atomic flags with multiple operations."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = libc.renameat2
+    except AttributeError:
+        raise OSError(errno.ENOSYS, "Atomic rename is unavailable on this platform") from None
+    rename.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename.restype = ctypes.c_int
+    if rename(_AT_FDCWD, os.fsencode(first), _AT_FDCWD, os.fsencode(second), flags) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def exchange_files(first: Path, second: Path) -> None:
+    """Atomically exchange two existing paths on Linux."""
+    _renameat2(first, second, _RENAME_EXCHANGE)
+
+
+def rename_no_replace(source: Path, target: Path) -> None:
+    """Atomically publish source only if target does not exist, including dangling symlinks."""
+    _renameat2(source, target, _RENAME_NOREPLACE)
+
+
+def replace_with_history(target: Path, data: bytes, check_current: Callable[[], None]) -> None:
+    """Publish data while retaining the exact displaced inode in .history.
+
+    Both sides exist before exchange, so an interruption leaves both versions recoverable.
+    Failed attempts may leave a proposed version in history; cleanup must never remove it.
+    """
+    history = target.parent / ".history"
+    history.mkdir(mode=0o700, exist_ok=True)
+    if not is_real_dir(history):
+        raise OSError(errno.EINVAL, "History is not a real directory")
+    # Also protect recovery artifacts retained by earlier releases.
+    history.chmod(0o700)
+    fsync_dir(target.parent)
+    version = history / secrets.token_hex(16)
+    version.mkdir(mode=0o700)
+    fsync_dir(history)
+    previous = version / target.name
+    atomic_write(previous, data, mode=0o600)
+    mode = target.lstat().st_mode
+    if not stat.S_ISREG(mode):
+        raise OSError(errno.EINVAL, "Note is not a regular file")
+    previous.chmod(stat.S_IMODE(mode))
+    fsync_file(previous)
+    check_current()
+    exchange_files(previous, target)
+    fsync_file(previous)
+    fsync_dir(version)
+    fsync_dir(target.parent)

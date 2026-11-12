@@ -166,3 +166,75 @@ def test_unwritable_data_folder_exits_with_a_message(image: str, tmp_path: Path)
         "Data directory /data is not writable by uid 4321. "
         "Fix it on the host with: sudo chown -R 4321:4321 <your data folder>"
     ) in result.stdout + result.stderr
+
+
+def test_hardened_container_updates_and_reads_a_readonly_mount(image, data_folder, containers):
+    container = start(image, data_folder, *HARDENED)
+    containers.append(container)
+    wait_healthy(container)
+    note = create_note_over_http(container, "Durable Docker note")
+    with httpx.Client(base_url=base_url(container), headers=CSRF, timeout=10) as client:
+        client.post("/api/login", json={"username": USERNAME, "password": PASSWORD})
+        saved = client.put(
+            f"/api/notes/{note['id']}",
+            json={
+                "title": note["title"],
+                "content": "updated under hardening",
+                "base_revision": note["revision"],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        attachment_url = f"/api/notes/{note['id']}/attachments/same.txt"
+        first = client.put(attachment_url, content=b"first complete upload")
+        second = client.put(attachment_url, content=b"second complete upload")
+        assert first.status_code == second.status_code == 201
+        assert first.json()["name"] == "same.txt"
+        assert second.json()["name"] == "same (1).txt"
+        assert client.get(attachment_url).content == b"first complete upload"
+        assert (data_folder / note["id"] / "attachments" / "same (1).txt").read_bytes() == (
+            b"second complete upload"
+        )
+    history = data_folder / note["id"] / ".history"
+    assert [path.read_text() for path in history.rglob("*.md")] == ["from the test\n"]
+    docker("stop", container)
+    loose = data_folder / "Do not import.md"
+    loose.write_text("untouched")
+    staged = data_folder / ".plainnotes-tmp-do-not-clean"
+    staged.write_text("untouched")
+    reader = docker(
+        "run",
+        "-d",
+        "-p",
+        "127.0.0.1::8080",
+        "-v",
+        f"{data_folder}:/data:ro",
+        "-e",
+        f"PLAINNOTES_USERNAME={USERNAME}",
+        "-e",
+        f"PLAINNOTES_PASSWORD={PASSWORD}",
+        "-e",
+        f"PLAINNOTES_SECRET_KEY={SECRET_KEY}",
+        "-e",
+        "PLAINNOTES_COOKIE_SECURE=false",
+        "-e",
+        "PLAINNOTES_READ_ONLY=true",
+        "--health-interval",
+        "1s",
+        *HARDENED,
+        image,
+    )
+    containers.append(reader)
+    wait_healthy(reader)
+    with httpx.Client(base_url=base_url(reader), headers=CSRF, timeout=10) as client:
+        assert (
+            client.post(
+                "/api/login",
+                json={"username": USERNAME, "password": PASSWORD},
+            ).status_code
+            == 204
+        )
+        for route in ["/api/notes", "/api/search", "/api/tags"]:
+            assert client.get(route).status_code == 200
+        assert client.get(f"/api/notes/{note['id']}").json()["content"] == "updated under hardening"
+        assert client.delete(f"/api/notes/{note['id']}").status_code == 403
+    assert loose.read_text() == staged.read_text() == "untouched"

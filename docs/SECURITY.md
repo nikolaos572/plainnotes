@@ -12,7 +12,7 @@ plainnotes is a single-user notes server. It runs as one container on a home ser
 
 What we protect:
 
-- **The notes and attachments** in the data folder: their confidentiality (only the logged-in owner can read them), their integrity (nothing is written except what the owner saves, byte for byte) and their availability (nothing is lost by a crash, a concurrent edit or a mistaken delete).
+- **The notes and attachments** in the data folder: their confidentiality (only the logged-in owner can read them), their integrity and availability through revision checks, atomic writes, recovery copies, drafts and trash. These safeguards do not replace backups; external writers, storage failures and browser storage limits remain relevant.
 - **The owner's browser session**: nothing inside a note, a title, a tag, a file name or an uploaded file may run code in the logged-in app.
 - **The host**: the server never reads or writes outside the data folder, and the container runs without privileges.
 
@@ -37,7 +37,7 @@ Out of scope: an attacker who already has shell access to the host or write acce
 | Clickjacking | `frame-ancestors 'none'` and `X-Frame-Options: DENY` on every response | `tests/test_security.py::test_headers_on_every_response_type` |
 | Denial of service | 32 MiB body limit counted on the bytes received (uploads have their own optional limit and stream to disk with constant memory); 10 MiB note limit; queries ≤ 500 characters and 20 terms; linear-time regexes (possessive/atomic tag patterns, no backtracking constructs); bounded rate-limiter memory | `tests/test_api_notes.py::test_body_limit`, `test_content_too_large`, `tests/test_attachments.py` (50 MB streamed upload with bounded memory, limits), `tests/test_text.py::test_tag_regex_is_fast_on_pathological_input`, `tests/test_search.py::test_parse_limits` |
 | Information leaks | `/docs`, `/redoc` and `/openapi.json` disabled; FastAPI's built-in OpenTelemetry is switched off; generic `500` bodies (traceback only in the server log); validation errors report field names, never values; no paths or tracebacks in responses; no passwords, cookies, note content or search queries in logs (access log off); `Cache-Control: no-store` on the API; `Referrer-Policy: no-referrer` | `tests/test_web.py` (docs 404, generic 500, validation errors), `tests/test_security.py::test_no_secrets_in_logs`, `tests/test_api_search.py::test_search_terms_are_not_logged` |
-| Data loss | Atomic writes (temp file, `fsync`, `os.replace`, folder `fsync`); notes created in a temp folder and renamed into place; one lock around every change; revision (SHA-256) check on every save; delete moves to the trash; drafts kept in the browser | `tests/test_fsutil.py` (failure before `os.replace` keeps the original), `tests/test_api_notes.py::test_revision_conflict`, `tests/test_trash.py`, browser conflict and draft tests |
+| Data loss | Atomic writes and directory syncing; content updates atomically exchange files and retain the displaced inode in .history; crash-safe direct import; title/content revision checks; trash with undo; independent IndexedDB drafts with visible storage errors. The app lock does not coordinate external editors | `tests/test_fsutil.py` (failure before `os.replace` keeps the original), `tests/test_api_notes.py::test_revision_conflict`, `tests/test_trash.py`, browser conflict and draft tests |
 | Supply chain | Two direct Python dependencies (`fastapi`, `uvicorn`), every runtime package pinned with `--hash`; the Docker base image pinned by digest; two vendored JavaScript files, unmodified, with SHA-256 recorded under [Third-party code](#third-party-code) and checked by a test; no CDN, no web fonts, no outbound connections | `pip install --require-hashes` in the Dockerfile; `tests/test_frontend.py::test_vendored_files_are_unchanged` |
 | Container | Runs as UID:GID 1000:1000; nothing installed beyond the Python packages; no `VOLUME`; works with `--read-only --cap-drop ALL --security-opt no-new-privileges` and needs no tmpfs; healthcheck in Python without curl | `tests/test_docker.py` |
 
@@ -96,3 +96,41 @@ Everything below is automated and part of the test suite (run locally or with th
 - **Requests with a wrong method get `405` before authentication**, which confirms that the path exists. The route list is public in this repository anyway.
 - **Media files allowed inline** (images, audio, video, plain text) are rendered by the browser's own viewers under the sandbox policy; a crafted file could still target a bug in the browser's decoders.
 - **Table column alignment is not shown** in Markdown view, because markdown-it expresses it with `style` attributes, which are forbidden.
+
+## Audit remediation (2026-11-11)
+
+The follow-up audit added regressions for interrupted imports, external writes at the
+commit boundary, title-only conflicts, read-only startup and GET requests, directory
+I/O errors, independent multi-tab drafts, storage failures, orphaned draft recovery,
+line endings and canonical base paths. See [the user guide](guide.md) for recovery behavior.
+
+Previous content is retained under each note's hidden .history directory and is not
+exposed by any API route. It moves with the note to trash and is removed by permanent
+trash deletion. It is not automatically pruned; account for its disk usage in backups. Recovery
+directories are owner-only, and proposed files are private from creation, including
+failed-write artifacts. Existing recovery directories are restricted on the next content save.
+
+Content replacement uses Linux renameat2 with RENAME_EXCHANGE; unsupported filesystems
+fail safely. This preserves the file displaced at commit time, including a concurrent
+external version, but cannot prevent an external program from subsequently changing or
+deleting files. Do not run multiple app instances against the same data directory.
+
+Drafts are scoped by installation path and editor instance in IndexedDB. Logout asks
+before deleting recovery drafts; after server logout succeeds, it invalidates old editors
+and purges drafts atomically. Cancelled and failed logouts retain recovery drafts. If browser
+storage cannot be accessed, logout still ends the session and reports that local drafts
+could not be erased. Clear browser site data in that case.
+
+Read-only mode performs neither import nor cleanup and can use a read-only data mount.
+Loose files remain loose in that mode; they are not listed as imported notes.
+
+After upgrading, reload open browser tabs to use the new draft implementation. Existing
+localStorage drafts remain recoverable. Old content-only revision tokens produce a
+normal conflict; load the latest version or explicitly overwrite after reviewing it.
+
+Validation on the audit VM: 453 unit/API/source tests, 45 Chromium browser tests and
+5 Docker tests passed (503 total). Ruff lint and formatting checks passed. Separate
+real-process crash checks verified import recovery and both sides of an interrupted
+file exchange. HTTPS Nginx tests exercised /notes API and browser flows, including
+Secure cookies, revisions, history, draft storage, attachment ranges and trash.
+These checks do not simulate a physical power cut or every filesystem/browser.

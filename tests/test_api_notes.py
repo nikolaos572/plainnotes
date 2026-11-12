@@ -85,7 +85,10 @@ def test_update_rename_and_case_only_rename(client: TestClient, data_root: Path)
     ).json()
     assert moved["title"] == "Containers"
     assert moved["content"] == "two"
-    assert [p.name for p in (data_root / note["id"]).iterdir()] == ["Containers.md"]
+    assert sorted(p.name for p in (data_root / note["id"]).iterdir()) == [
+        ".history",
+        "Containers.md",
+    ]
     assert client.get(f"/api/notes/{note['id']}").json()["title"] == "Containers"
 
 
@@ -124,7 +127,7 @@ def test_revision_conflict(client: TestClient, data_root: Path) -> None:
     assert body["code"] == "revision_conflict"
     assert body["current"]["content"] == "changed elsewhere"
     assert body["current"]["title"] == "Shared"
-    assert body["current"]["revision"] == notes.revision_of(b"changed elsewhere")
+    assert body["current"]["revision"] == notes.revision_of(b"changed elsewhere", "Shared")
     assert body["current"]["modified"].endswith("Z")
     assert path.read_text() == "changed elsewhere"
     overwrite = client.put(
@@ -297,3 +300,24 @@ def test_import_at_startup(app_factory: Callable, data_root: Path) -> None:
         pass
     names = sorted(p.name for p in data_root.iterdir())
     assert len(names) == 1 and notes.is_note_id(names[0])
+
+
+def test_history_is_not_exposed_by_api_or_search(client, data_root):
+    note = create(client, "History isolation", "PRIVATE_HISTORY_MARKER")
+    path = "/api/notes/" + note["id"]
+    response = client.put(
+        path,
+        json={
+            "title": note["title"],
+            "content": "current",
+            "base_revision": note["revision"],
+        },
+    )
+    assert response.status_code == 200
+    archived = next((data_root / note["id"] / ".history").rglob("*.md"))
+    assert archived.read_text() == "PRIVATE_HISTORY_MARKER"
+    assert client.get("/api/search", params={"q": "PRIVATE_HISTORY_MARKER"}).json() == []
+    assert client.get(path + "/attachments").json() == []
+    relative = archived.relative_to(data_root / note["id"]).as_posix()
+    for url in [path + "/" + relative, "/static/" + relative, path + "/attachments/../" + relative]:
+        assert client.get(url).status_code == 404

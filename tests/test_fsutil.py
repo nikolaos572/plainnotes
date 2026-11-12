@@ -1,5 +1,6 @@
 """Safe paths, symlink handling, atomic writes and temp-file cleanup."""
 
+import errno
 import logging
 import os
 import stat
@@ -133,3 +134,164 @@ def test_warn_once(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
             data_dir.warn_once(logger, "Skipping %r", "folder")
         data_dir.warn_once(logger, "Skipping %r", "other")
     assert [r.getMessage() for r in caplog.records] == ["Skipping 'folder'", "Skipping 'other'"]
+
+
+@pytest.mark.parametrize("error", [errno.EIO, errno.EACCES])
+def test_directory_sync_reports_real_errors(tmp_path, monkeypatch, error):
+    def fail(_fd):
+        raise OSError(error, "injected flush failure")
+
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(OSError):
+        fsutil.fsync_dir(tmp_path)
+
+
+def test_directory_sync_tolerates_unsupported_filesystem(tmp_path, monkeypatch):
+    def unsupported(_fd):
+        raise OSError(errno.EINVAL, "unsupported")
+
+    monkeypatch.setattr(os, "fsync", unsupported)
+    fsutil.fsync_dir(tmp_path)
+
+
+def test_post_replace_sync_error_is_not_success(tmp_path, monkeypatch):
+    target = tmp_path / "note.md"
+    target.write_bytes(b"old")
+    real = os.fsync
+
+    def fail_directory(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "directory I/O failure")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory)
+    with pytest.raises(OSError):
+        fsutil.atomic_write(target, b"new")
+    assert target.read_bytes() == b"new"  # committed, but durability could not be confirmed
+
+
+def test_unsupported_exchange_keeps_original(tmp_path, monkeypatch):
+    target = tmp_path / "note.md"
+    target.write_bytes(b"original")
+
+    def unsupported(*_args):
+        raise OSError(errno.ENOSYS, "unsupported exchange")
+
+    monkeypatch.setattr(fsutil, "exchange_files", unsupported)
+    with pytest.raises(OSError):
+        fsutil.replace_with_history(target, b"proposed", lambda: None)
+    assert target.read_bytes() == b"original"
+    assert [p.read_bytes() for p in (tmp_path / ".history").rglob("*.md")] == [b"proposed"]
+
+
+@pytest.mark.parametrize("stage", ["file_sync", "directory_sync", "chmod", "exchange"])
+def test_history_failures_never_expose_private_content(tmp_path, monkeypatch, stage):
+    target = tmp_path / "Private.md"
+    target.write_bytes(b"original")
+    target.chmod(0o600)
+    real_sync = os.fsync
+    real_dir_sync = fsutil.fsync_dir
+    real_chmod = Path.chmod
+    inspected = []
+
+    def fail():
+        raise OSError(errno.EIO, "injected history failure")
+
+    def file_sync(fd):
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISREG(mode):
+            inspected.append(mode)
+            assert stat.S_IMODE(mode) & 0o077 == 0
+            fail()
+        real_sync(fd)
+
+    def dir_sync(path):
+        if path.parent.name == ".history":
+            fail()
+        real_dir_sync(path)
+
+    def chmod(path, mode, **kwargs):
+        if path.name == target.name and path.parent.parent.name == ".history":
+            fail()
+        return real_chmod(path, mode, **kwargs)
+
+    if stage == "file_sync":
+        monkeypatch.setattr(os, "fsync", file_sync)
+    elif stage == "directory_sync":
+        monkeypatch.setattr(fsutil, "fsync_dir", dir_sync)
+    elif stage == "chmod":
+        monkeypatch.setattr(Path, "chmod", chmod)
+    else:
+        monkeypatch.setattr(fsutil, "exchange_files", lambda *_: fail())
+    with pytest.raises(OSError):
+        fsutil.replace_with_history(target, b"private replacement", lambda: None)
+    assert target.read_bytes() == b"original"
+    for path in (tmp_path / ".history").rglob("*"):
+        assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0
+    if stage == "file_sync":
+        assert inspected
+
+
+def test_history_is_private_and_published_note_keeps_mode(tmp_path):
+    target = tmp_path / "Note.md"
+    target.write_bytes(b"original")
+    target.chmod(0o640)
+    history = tmp_path / ".history"
+    history.mkdir(mode=0o755)
+    old = history / "old.md"
+    old.write_bytes(b"legacy history")
+    fsutil.replace_with_history(target, b"new", lambda: None)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert stat.S_IMODE(history.stat().st_mode) == 0o700
+    versions = [p for p in history.iterdir() if p.is_dir()]
+    assert len(versions) == 1
+    assert stat.S_IMODE(versions[0].stat().st_mode) == 0o700
+    assert (versions[0] / "Note.md").read_bytes() == b"original"
+
+
+def test_no_replace_publishes_complete_file(tmp_path):
+    source = tmp_path / "staged"
+    target = tmp_path / "published"
+    source.write_bytes(b"complete")
+    fsutil.rename_no_replace(source, target)
+    assert not source.exists()
+    assert target.read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "dangling"])
+def test_no_replace_refuses_every_existing_destination(tmp_path, kind):
+    source = tmp_path / "staged"
+    source.write_bytes(b"new data")
+    target = tmp_path / "destination"
+    protected = tmp_path / "protected"
+    protected.write_bytes(b"keep")
+    if kind == "file":
+        target.write_bytes(b"original")
+    elif kind == "directory":
+        target.mkdir()
+        (target / "child").write_bytes(b"original")
+    else:
+        target.symlink_to(protected if kind == "symlink" else tmp_path / "missing")
+    with pytest.raises(FileExistsError):
+        fsutil.rename_no_replace(source, target)
+    assert source.read_bytes() == b"new data"
+    assert protected.read_bytes() == b"keep"
+    if kind == "file":
+        assert target.read_bytes() == b"original"
+    elif kind == "directory":
+        assert (target / "child").read_bytes() == b"original"
+    else:
+        assert target.is_symlink()
+
+
+def test_missing_renameat2_never_falls_back_to_overwrite(tmp_path, monkeypatch):
+    source = tmp_path / "staged"
+    target = tmp_path / "existing"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    monkeypatch.setattr(fsutil.ctypes, "CDLL", lambda *_args, **_kwargs: object())
+    with pytest.raises(OSError) as error:
+        fsutil.rename_no_replace(source, target)
+    assert error.value.errno == errno.ENOSYS
+    assert source.read_bytes() == b"new"
+    assert target.read_bytes() == b"old"

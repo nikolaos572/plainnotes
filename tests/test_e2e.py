@@ -239,6 +239,7 @@ def test_login_and_logout(context: BrowserContext, server: Server) -> None:
     expect(page.get_by_role("heading", name="Tags")).to_be_visible()
     page.get_by_text("Menu").click()
     page.get_by_role("button", name="Log out").click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
     expect(page.get_by_label("Username")).to_be_visible()
     assert page.request.get(server.url + "api/session").status == 401
 
@@ -286,7 +287,10 @@ def test_create_edit_save_and_rename(page: Page, server: Server) -> None:
     page.get_by_label("Title").fill(renamed.upper())
     page.keyboard.press("Control+s")
     expect(page.locator(".dirty-dot")).to_be_hidden()
-    assert [p.name for p in (server.data / note_id).iterdir()] == [f"{renamed.upper()}.md"]
+    assert sorted(p.name for p in (server.data / note_id).iterdir()) == [
+        ".history",
+        f"{renamed.upper()}.md",
+    ]
     page.get_by_role("button", name="Close").click()
     expect(page.get_by_role("heading", name=renamed.upper())).to_be_visible()
     expect(page).to_have_title(f"{renamed.upper()} – plainnotes")
@@ -729,8 +733,13 @@ def test_xss_in_titles_attachment_names_and_search(
 
 
 def draft(page: Page, key: str) -> dict | None:
-    value = page.evaluate(f"localStorage.getItem('plainnotes.draft.{key}')")
-    return json.loads(value) if value else None
+    return page.evaluate(
+        """async (key) => {
+            const drafts = await import("./static/js/drafts.js");
+            return (await drafts.loadDrafts(key === "new" ? null : key))[0] ?? null;
+        }""",
+        key,
+    )
 
 
 def eventually(check: Callable[[], object], failure: str, timeout: float = 5) -> object:
@@ -833,6 +842,7 @@ def test_draft_of_a_new_note_and_logout(context: BrowserContext, page: Page) -> 
     second.get_by_text("Menu").click()
     second.get_by_role("button", name="Log out").click()
     second.locator("dialog[open]").get_by_role("button", name="Discard").click()
+    second.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
     expect(second.get_by_label("Username")).to_be_visible()
     keys = second.evaluate("Object.keys(localStorage)")
     assert not [key for key in keys if key.startswith("plainnotes.draft.")]
@@ -975,3 +985,485 @@ def test_malformed_and_unknown_routes(page: Page) -> None:
     expect(page.get_by_role("heading", name="Not found")).to_be_visible()
     page.get_by_role("link", name="Back to all notes").click()
     expect(page.get_by_role("heading", name="All notes")).to_be_visible()
+
+
+def all_drafts(page, note_id):
+    return page.evaluate(
+        """async (id) => (await import("./static/js/drafts.js")).loadDrafts(id)""",
+        note_id,
+    )
+
+
+def test_saving_other_tab_keeps_independent_draft(context, page):
+    note = create_note(page, unique("Independent tabs"), "original")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    other = context.new_page()
+    other.goto(route)
+    expect(page.get_by_label("Note text")).to_have_value("original")
+    expect(other.get_by_label("Note text")).to_have_value("original")
+    page.get_by_label("Note text").fill("A unsaved")
+    wait_for_draft(page, note["id"])
+    other.get_by_label("Note text").fill("B saved")
+    other.keyboard.press("Control+s")
+    expect(other.locator(".dirty-dot")).to_be_hidden()
+    assert [d["content"] for d in all_drafts(other, note["id"])] == ["A unsaved"]
+    page.close()
+    other.close()
+    recovered = context.new_page()
+    recovered.goto(route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("A unsaved")
+    recovered.keyboard.press("Control+s")
+    expect(recovered.locator("dialog[open]")).to_contain_text("changed somewhere else")
+
+
+def test_two_new_notes_have_distinct_drafts(context, page):
+    page.goto("#/new")
+    other = context.new_page()
+    other.goto("#/new")
+    expect(page.get_by_label("Note text")).to_be_visible()
+    expect(other.get_by_label("Note text")).to_be_visible()
+    page.get_by_label("Title").fill(unique("First"))
+    page.get_by_label("Note text").fill("first draft")
+    other.get_by_label("Title").fill(unique("Second"))
+    other.get_by_label("Note text").fill("second draft")
+    eventually(lambda: len(all_drafts(page, None)) == 2, "two independent new-note drafts missing")
+    other.keyboard.press("Control+s")
+    expect(other.locator(".dirty-dot")).to_be_hidden()
+    assert [d["content"] for d in all_drafts(page, None)] == ["first draft"]
+
+
+def test_large_draft_survives_reload(context, page):
+    note = create_note(page, unique("Large draft"), "original")
+    page.goto(f"#/note/{note['id']}/edit")
+    text = "z" * (6 * 1024 * 1024)
+    page.get_by_label("Note text").fill(text)
+    assert wait_for_draft(page, note["id"])["content"] == text
+    recovered, _ = reopen(context, page, f"#/note/{note['id']}/edit")
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value(text)
+
+
+def test_draft_storage_failure_is_visible_and_server_save_still_works(page, server):
+    page.add_init_script("""IDBObjectStore.prototype.put = function() {
+        throw new DOMException("Injected quota", "QuotaExceededError");
+    };""")
+    note = create_note(page, unique("Quota failure"), "original")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("must not silently lose this")
+    expect(page.locator("#draft-warning")).to_be_visible()
+    expect(page.locator("#draft-warning")).to_contain_text("could not be stored")
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    assert note_file(server, note).read_text() == "must not silently lose this"
+
+
+def test_orphaned_draft_can_be_saved_as_new(context, page):
+    note = create_note(page, unique("Orphan"), "original")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    page.get_by_label("Note text").fill("recover this")
+    wait_for_draft(page, note["id"])
+    api(page, "DELETE", f"api/notes/{note['id']}")
+    recovered, _ = reopen(context, page, route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("recover this")
+    recovered.keyboard.press("Control+s")
+    recovered.locator("dialog[open]").get_by_role("button", name="Save as new note").click()
+    expect(recovered.locator(".dirty-dot")).to_be_hidden()
+    assert note["id"] not in recovered.url
+    assert all_drafts(recovered, note["id"]) == []
+    new_id = recovered.url.split("/note/")[1].split("/")[0]
+    assert api(recovered, "GET", f"api/notes/{new_id}")["content"] == "recover this"
+
+
+def test_legacy_localstorage_draft_is_recovered(page):
+    note = create_note(page, unique("Legacy"), "original")
+    page.goto("#/")
+    page.evaluate(
+        """(note) => localStorage.setItem("plainnotes.draft." + note.id, JSON.stringify({
+        title: note.title, content: "legacy unsaved", base_revision: note.revision,
+        saved_at: "2026-01-01T00:00:00Z"
+    }))""",
+        note,
+    )
+    page.goto(f"#/note/{note['id']}/edit")
+    page.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(page.get_by_label("Note text")).to_have_value("legacy unsaved")
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    wait_for_no_draft(page, note["id"])
+
+
+def test_logout_epoch_blocks_stale_writes(context, page):
+    page.goto("#/")
+    other = context.new_page()
+    other.goto("#/")
+    other.evaluate("""async () => {
+        const drafts = await import("./static/js/drafts.js");
+        window.auditOwner = await drafts.beginEditor();
+        await drafts.saveDraft(null, {title: "draft", content: "text"}, window.auditOwner);
+    }""")
+    page.evaluate("""async () => (await import("./static/js/drafts.js")).removeAllDrafts()""")
+    expect(other.get_by_label("Username")).to_be_visible()
+    assert other.evaluate("""async () => {
+        const drafts = await import("./static/js/drafts.js");
+        try {
+            const value = {title: "stale", content: "must not reappear"};
+            await drafts.saveDraft(null, value, window.auditOwner);
+            return false;
+        } catch { return true; }
+    }""")
+    assert all_drafts(other, None) == []
+
+
+def test_logout_still_works_when_draft_storage_is_unavailable(page, server):
+    page.add_init_script("""indexedDB.open = function() {
+        throw new DOMException("Storage unavailable", "SecurityError");
+    };""")
+    page.goto("#/")
+    page.get_by_text("Menu").click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    assert page.request.get(server.url + "api/session").status == 401
+    expect(page.locator(".toast.error")).to_contain_text("could not be erased")
+
+
+def test_draft_installation_namespaces(page):
+    page.goto("#/")
+    result = page.evaluate("""async () => {
+        const url = new URL("./static/js/drafts.js", location.href).href;
+        const first = await import(url);
+        const owner = await first.beginEditor();
+        await first.saveDraft(null, {title: "root", content: "keep"}, owner);
+        history.replaceState(null, "", "/second/");
+        const second = await import(url + "?second-installation");
+        const isolated = (await second.loadDrafts(null)).length === 0;
+        await second.removeAllDrafts();
+        const retained = (await first.loadDrafts(null))[0].content === "keep";
+        history.replaceState(null, "", "/");
+        return isolated && retained;
+    }""")
+    assert result
+
+
+@pytest.mark.parametrize("content", ["a\rb\r", "a\r\nb\n", "a\nb\n"])
+def test_title_only_edit_preserves_exact_content(page, server, content):
+    note = create_note(page, unique("Raw bytes"), content)
+    page.goto(f"#/note/{note['id']}/edit")
+    title = note["title"] + " renamed"
+    page.get_by_label("Title").fill(title)
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    assert (server.data / note["id"] / (title + ".md")).read_bytes() == content.encode()
+
+
+def test_lone_cr_edits_and_draft_recovery_preserve_convention(context, page, server):
+    note = create_note(page, unique("CR recovery"), "a\rb\r")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    page.get_by_label("Note text").fill("a\nb\nc\n")
+    wait_for_draft(page, note["id"])
+    recovered, _ = reopen(context, page, route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("a\nb\nc\n")
+    recovered.keyboard.press("Control+s")
+    expect(recovered.locator(".dirty-dot")).to_be_hidden()
+    assert note_file(server, note).read_bytes() == b"a\rb\rc\r"
+
+
+def test_discarding_restored_copy_preserves_original_tab(context, page):
+    note = create_note(page, unique("Original draft"), "server text")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    page.get_by_label("Note text").fill("A has never saved this")
+    wait_for_draft(page, note["id"])
+    second = context.new_page()
+    second.goto(route)
+    second.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(second.get_by_label("Note text")).to_have_value("A has never saved this")
+    eventually(lambda: len(all_drafts(page, note["id"])) == 2, "second draft missing")
+    second.get_by_label("Note text").fill("B changed the restored copy")
+    eventually(
+        lambda: any(
+            d["content"] == "B changed the restored copy" for d in all_drafts(page, note["id"])
+        ),
+        "B edit not persisted",
+    )
+    second.get_by_role("button", name="Close", exact=True).click()
+    second.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    expect(second.get_by_role("heading", name=note["title"], exact=True)).to_be_visible()
+    expect(page.get_by_label("Note text")).to_have_value("A has never saved this")
+    remaining = all_drafts(page, note["id"])
+    assert any(d["content"] == "A has never saved this" for d in remaining), remaining
+    page.close()
+    recovered = context.new_page()
+    recovered.goto(route)
+    recovered.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
+    expect(recovered.get_by_label("Note text")).to_have_value("A has never saved this")
+
+
+def test_cancelled_logout_leaves_current_editor_recoverable(page):
+    note = create_note(page, unique("Cancelled logout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("still displayed after cancelling logout")
+    wait_for_draft(page, note["id"])
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Cancel", exact=True).click()
+    expect(page.get_by_label("Note text")).to_have_value("still displayed after cancelling logout")
+    assert all_drafts(page, note["id"]), "dirty editor retained but recovery copy removed"
+
+
+def test_failed_logout_does_not_destroy_subsequent_edits(page):
+    note = create_note(page, unique("Failed logout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    expect(page.get_by_label("Note text")).to_be_visible()
+    page.route(
+        "**/api/logout",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body='{"code":"internal","detail":"Injected logout failure"}',
+        ),
+    )
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator(".toast.error")).to_contain_text("Injected logout failure")
+    page.get_by_label("Note text").fill("new work AFTER the failed logout")
+    page.wait_for_timeout(1000)
+    assert page.locator("#note-content").count() == 1, {
+        "url": page.url,
+        "drafts": all_drafts(page, note["id"]),
+        "session_status": page.request.get("api/session").status,
+    }
+
+
+@pytest.mark.parametrize("choice", ["Save", "Discard", "Cancel"])
+def test_logout_choices_preserve_work_until_committed(page, choice):
+    note = create_note(page, unique("Logout choices"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("unsaved choice text")
+    wait_for_draft(page, note["id"])
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name=choice, exact=True).click()
+    if choice != "Cancel":
+        page.locator("dialog[open]").get_by_role("button", name="Cancel", exact=True).click()
+    expect(page.get_by_label("Note text")).to_have_value("unsaved choice text")
+    assert page.request.get("api/session").status == 200
+    if choice == "Save":
+        assert api(page, "GET", f"api/notes/{note['id']}")["content"] == "unsaved choice text"
+    else:
+        assert all_drafts(page, note["id"])[0]["content"] == "unsaved choice text"
+
+
+def test_network_logout_failure_preserves_both_tabs_and_retry(context, page):
+    note = create_note(page, unique("Network logout"), "server")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    other = context.new_page()
+    other.goto(route)
+    expect(other.get_by_label("Note text")).to_be_visible()
+    page.get_by_label("Note text").fill("first draft")
+    other.get_by_label("Note text").fill("second draft")
+    eventually(lambda: len(all_drafts(page, note["id"])) == 2, "both drafts missing")
+    page.route("**/api/logout", lambda request: request.abort())
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator(".toast.error")).to_contain_text("Cannot reach")
+    page.get_by_label("Note text").fill("still editable")
+    eventually(
+        lambda: (
+            {d["content"] for d in all_drafts(page, note["id"])}
+            == {"still editable", "second draft"}
+        ),
+        "drafts not preserved after failure",
+    )
+    expect(other.get_by_label("Note text")).to_have_value("second draft")
+    page.unroute("**/api/logout")
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    expect(other.get_by_label("Username")).to_be_visible()
+    assert all_drafts(page, note["id"]) == []
+
+
+def test_pending_logout_blocks_edits_and_recovers_on_failure(page):
+    note = create_note(page, unique("Pending logout"), "server")
+    route = f"#/note/{note['id']}/edit"
+    page.goto(route)
+    expect(page.get_by_label("Note text")).to_be_visible()
+    held = []
+    page.route("**/api/logout", lambda route: held.append(route))
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator("main")).to_have_js_property("inert", True)
+    page.keyboard.type("should not be inserted")
+    expect(page.get_by_label("Note text")).to_have_value("server")
+    page.evaluate("location.hash = '#/tags'")
+    expect(page).to_have_url(re.compile(re.escape(route) + "$"))
+    assert len(held) == 1
+    held[0].fulfill(
+        status=500, content_type="application/json", body='{"code":"internal","detail":"Try again"}'
+    )
+    expect(page.locator("main")).to_have_js_property("inert", False)
+    page.get_by_label("Note text").fill("recovered editing")
+    assert wait_for_draft(page, note["id"])["content"] == "recovered editing"
+
+
+def test_cross_tab_logout_closes_recovery_dialog(context, page):
+    note = create_note(page, unique("Dialog logout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("draft")
+    wait_for_draft(page, note["id"])
+    other = context.new_page()
+    other.goto(f"#/note/{note['id']}/edit")
+    expect(other.locator("dialog[open]")).to_be_visible()
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Discard", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(other.get_by_label("Username")).to_be_visible()
+    expect(other.locator("dialog")).to_have_count(0)
+    assert all_drafts(other, note["id"]) == []
+
+
+def test_hung_logout_times_out_without_losing_drafts(page):
+    page.clock.install()
+    note = create_note(page, unique("Logout timeout"), "server")
+    page.goto(f"#/note/{note['id']}/edit")
+    expect(page.get_by_label("Note text")).to_be_visible()
+    page.route("**/api/logout", lambda route: None)
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator("main")).to_have_js_property("inert", True)
+    page.clock.fast_forward(16_000)
+    expect(page.locator("main")).to_have_js_property("inert", False)
+    expect(page.locator(".toast.error")).to_contain_text("Cannot reach")
+    page.get_by_label("Note text").fill("after timeout")
+    page.clock.fast_forward(300)
+    assert wait_for_draft(page, note["id"])["content"] == "after timeout"
+
+
+def test_late_save_response_does_not_update_logged_out_page(context, page):
+    note = create_note(page, unique("Private editor title"), "original")
+    path = f"api/notes/{note['id']}"
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("saved just before logout")
+    held = []
+
+    def hold_response(route):
+        held.append((route, route.fetch()))
+
+    page.route("**/" + path, hold_response)
+    page.keyboard.press("Control+s")
+
+    def response_ready():
+        page.wait_for_timeout(20)
+        return held
+
+    eventually(response_ready, "save response not captured")
+    other = context.new_page()
+    other.goto("#/")
+    other.get_by_text("Menu", exact=True).click()
+    other.get_by_role("button", name="Log out", exact=True).click()
+    other.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    held[0][0].fulfill(response=held[0][1])
+    page.wait_for_timeout(300)
+    expect(page).to_have_title("plainnotes")
+    expect(page.locator(".toast").filter(has_text=re.compile("^Saved$"))).to_have_count(0)
+    assert all_drafts(page, note["id"]) == []
+
+
+def test_successful_local_logout_closes_late_dialog(page):
+    page.goto("#/")
+    held = []
+    page.route("**/api/logout", lambda route: held.append(route))
+    page.get_by_text("Menu", exact=True).click()
+    page.get_by_role("button", name="Log out", exact=True).click()
+    page.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.locator("main")).to_have_js_property("inert", True)
+    page.evaluate("""async () => {
+        const ui = await import("./static/js/ui.js");
+        ui.showDialog({title: "Delayed recovery prompt", buttons: [{label: "Keep", value: null}]});
+    }""")
+    expect(page.locator("dialog[open]")).to_be_visible()
+    held[0].fulfill(response=held[0].fetch())
+    expect(page.get_by_label("Username")).to_be_visible()
+    expect(page.locator("dialog")).to_have_count(0)
+
+
+@pytest.mark.parametrize("status", [404, 409])
+def test_late_save_error_does_not_open_dialog_after_logout(context, page, status):
+    note = create_note(page, unique("Late error"), "original")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("pending")
+    held = []
+    page.route(f"**/api/notes/{note['id']}", lambda route: held.append(route))
+    page.keyboard.press("Control+s")
+    expect(page.get_by_role("button", name="Save", exact=False)).to_be_disabled()
+    other = context.new_page()
+    other.goto("#/")
+    other.get_by_text("Menu", exact=True).click()
+    other.get_by_role("button", name="Log out", exact=True).click()
+    other.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    body = {"code": "not_found", "detail": "Missing"}
+    if status == 409:
+        body = {"code": "revision_conflict", "detail": "Changed", "current": note}
+    held[0].fulfill(status=status, content_type="application/json", body=json.dumps(body))
+    page.wait_for_timeout(300)
+    expect(page.locator("dialog")).to_have_count(0)
+    expect(page).to_have_title("plainnotes")
+
+
+def test_new_note_save_keeps_old_draft_if_migration_fails(page, server):
+    title = unique("Migration")
+    page.goto("#/new")
+    page.get_by_label("Title").fill(title)
+    page.get_by_label("Note text").fill("sent text")
+    wait_for_draft(page, "new")
+    held = []
+    page.route("**/api/notes", lambda route: held.append((route, route.fetch())))
+    page.keyboard.press("Control+s")
+    expect(page.get_by_role("button", name="Save", exact=False)).to_be_disabled()
+    page.get_by_label("Note text").fill("sent text plus newer unsaved text")
+    eventually(
+        lambda: (draft(page, "new") or {}).get("content") == "sent text plus newer unsaved text",
+        "newest draft not written",
+    )
+    page.evaluate("""() => {
+        const original = IDBObjectStore.prototype.put;
+        window.restoreDraftWrites = () => { IDBObjectStore.prototype.put = original; };
+        IDBObjectStore.prototype.put = function(value, ...args) {
+            if (value.kind === "draft" && value.noteId !== null) {
+                throw new DOMException("Injected migration quota", "QuotaExceededError");
+            }
+            return original.call(this, value, ...args);
+        };
+    }""")
+    held[0][0].fulfill(response=held[0][1])
+    expect(page.locator("#draft-warning")).to_be_visible()
+    expect(page.get_by_role("button", name="Save", exact=False)).to_be_enabled()
+    preserved = draft(page, "new")
+    assert preserved and preserved["content"] == "sent text plus newer unsaved text"
+    assert next(server.data.glob(f"*/{title}.md")).read_text() == "sent text"
+    page.evaluate("window.restoreDraftWrites()")
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    wait_for_no_draft(page, "new")
+    assert (
+        next(server.data.glob(f"*/{title}.md")).read_text() == "sent text plus newer unsaved text"
+    )

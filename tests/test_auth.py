@@ -328,3 +328,15 @@ def test_no_cors_headers(client: TestClient) -> None:
     assert not any(name.startswith("access-control-") for name in response.headers)
     response = client.get("/api/notes", headers={"Origin": "https://evil.example"})
     assert not any(name.startswith("access-control-") for name in response.headers)
+
+
+def test_credential_delimiters_cannot_preserve_old_sessions():
+    from app.auth import make_token, signing_key, token_expiry
+    from app.config import Settings
+
+    original = Settings(username="alpha", password="beta|gamma", secret_key="x" * 32)
+    changed = Settings(username="alpha|beta", password="gamma", secret_key="x" * 32)
+    token = make_token(signing_key(original), 2000)
+    assert token_expiry(signing_key(original), token, 1000) == 2000
+    assert signing_key(original) != signing_key(changed)
+    assert token_expiry(signing_key(changed), token, 1000) is None

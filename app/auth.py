@@ -41,10 +41,13 @@ def credentials_match(settings: Settings, username: str, password: str) -> bool:
 
 def signing_key(settings: Settings) -> bytes:
     """Session signing key; changing the secret, username or password ends all sessions."""
-    message = "plainnotes-session|" + settings.username + "|" + settings.password
+    # Framing prevents distinct username/password pairs from sharing a signing key.
+    username = settings.username.encode("utf-8", "surrogatepass")
+    password = settings.password.encode("utf-8", "surrogatepass")
+    message = b"plainnotes-session-v2|" + len(username).to_bytes(8, "big") + username + password
     return hmac.new(
         settings.secret_key.encode("utf-8", "surrogatepass"),
-        message.encode("utf-8", "surrogatepass"),
+        message,
         hashlib.sha256,
     ).digest()
 

@@ -29,7 +29,7 @@ function goToLogin() {
   }
 }
 
-async function request(method, path, { json, query } = {}) {
+async function request(method, path, { json, query, signal } = {}) {
   const url = query ? `${path}?${new URLSearchParams(query)}` : path;
   const headers = {};
   if (MUTATING.has(method)) headers["X-Requested-With"] = "plainnotes";
@@ -40,7 +40,7 @@ async function request(method, path, { json, query } = {}) {
   }
   let response;
   try {
-    response = await fetch(url, { method, headers, body, credentials: "same-origin" });
+    response = await fetch(url, { method, headers, body, signal, credentials: "same-origin" });
   } catch {
     throw new ApiError(0, "network", "Cannot reach the server.");
   }
@@ -81,7 +81,15 @@ export const attachmentUrl = (noteId, name) =>
 export const login = (username, password) =>
   request("POST", "api/login", { json: { username, password } });
 /** End the session. */
-export const logout = () => request("POST", "api/logout");
+export async function logout() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    return await request("POST", "api/logout", { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 /** @returns {Promise<{username: string, read_only: boolean}>} */
 export const getSession = () => request("GET", "api/session");
 /** @returns {Promise<Object[]>} all notes, newest first */

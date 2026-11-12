@@ -223,3 +223,22 @@ def test_healthcheck_against_a_live_server(live_server, monkeypatch: pytest.Monk
     assert healthcheck.main() == 1
     monkeypatch.setenv("PLAINNOTES_PORT", "1")
     assert healthcheck.main() == 1
+
+
+def test_read_only_data_dir_never_probes_writability(tmp_path, monkeypatch):
+    from app import fsutil
+
+    def no_writes(*_args):
+        raise AssertionError("write probe in read-only mode")
+
+    monkeypatch.setattr(fsutil, "create_temp_file", no_writes)
+    check_data_dir(tmp_path, read_only=True)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "value", ["/a/../notes", "/a/./notes", "//other/notes", "/a//b", "/.", "/.."]
+)
+def test_base_path_rejects_noncanonical_segments(value):
+    with pytest.raises(ConfigError, match="PLAINNOTES_BASE_PATH"):
+        load(BASE_PATH=value)

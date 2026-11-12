@@ -120,7 +120,7 @@ def test_create_and_read(data_dir: DataDir) -> None:
     assert path.read_bytes() == b"hello\n"
     again = notes.read_note(data_dir, note.ref.id)
     assert again.content == "hello\n"
-    assert again.revision == note.revision == notes.revision_of(b"hello\n")
+    assert again.revision == note.revision == notes.revision_of(b"hello\n", "First note")
     assert [p.name for p in data_dir.root.iterdir()] == [note.ref.id]
 
 
@@ -141,7 +141,7 @@ def test_update_content_and_rename(data_dir: DataDir) -> None:
     updated = notes.update_note(data_dir, note.ref.id, "New", "two", note.revision)
     assert updated.ref.title == "New"
     folder = data_dir.root / note.ref.id
-    assert [p.name for p in folder.iterdir()] == ["New.md"]
+    assert sorted(p.name for p in folder.iterdir()) == [".history", "New.md"]
     assert (folder / "New.md").read_bytes() == b"two"
 
 
@@ -295,7 +295,7 @@ def test_cleanup_temp_files(data_dir: DataDir, make_note: Callable) -> None:
     other.mkdir()
     (other / ".plainnotes-tmp-x").write_text("not ours to touch")
     notes.cleanup_temp_files(data_dir)
-    assert sorted(p.name for p in root.iterdir()) == [ID, "unrelated"]
+    assert sorted(p.name for p in root.iterdir()) == [".plainnotes-tmp-abc", ID, "unrelated"]
     assert sorted(p.name for p in path.parent.iterdir()) == ["Keep.md", "attachments"]
     assert [p.name for p in attachments.iterdir()] == ["real.txt"]
     assert (other / ".plainnotes-tmp-x").exists()
@@ -354,3 +354,105 @@ def test_paths_never_leave_data_folder(data_dir: DataDir, tmp_path: Path) -> Non
     for bad in ["../secret.md", "/etc/passwd", "..", "%2e%2e"]:
         with pytest.raises(notes.NotFound):
             notes.read_note(data_dir, bad)
+
+
+@pytest.mark.parametrize("after_move", [False, True])
+def test_interrupted_import_survives_cleanup(data_dir, monkeypatch, after_move):
+    original = data_dir.root / "Original.md"
+    original.write_bytes(b"only copy")
+    rename = Path.rename
+
+    def interrupt(path, target):
+        if path == original:
+            if after_move:
+                rename(path, target)
+            raise KeyboardInterrupt
+        return rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        notes.import_loose_files(data_dir)
+    notes.cleanup_temp_files(data_dir)
+    copies = list(data_dir.root.rglob("Original.md"))
+    assert len(copies) == 1
+    assert copies[0].read_bytes() == b"only copy"
+    monkeypatch.undo()
+    notes.import_loose_files(data_dir)
+    assert [ref.path.read_bytes() for ref in notes.list_notes(data_dir)] == [b"only copy"]
+
+
+def test_legacy_import_staging_is_not_deleted(data_dir):
+    staging = data_dir.root / ".plainnotes-tmp-legacy"
+    staging.mkdir()
+    (staging / "Original.md").write_bytes(b"only copy")
+    notes.cleanup_temp_files(data_dir)
+    assert (staging / "Original.md").read_bytes() == b"only copy"
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_rename_invalidates_stale_revision(data_dir, external):
+    original = notes.create_note(data_dir, "Original", "same")
+    if external:
+        original.ref.path.rename(original.ref.path.with_name("Renamed.md"))
+    else:
+        notes.update_note(data_dir, original.ref.id, "Renamed", "same", original.revision)
+    with pytest.raises(notes.RevisionConflict) as conflict:
+        notes.update_note(data_dir, original.ref.id, "Original", "stale edit", original.revision)
+    assert conflict.value.current.ref.title == "Renamed"
+    assert notes.read_note(data_dir, original.ref.id).content == "same"
+
+
+def test_external_replace_at_commit_is_preserved(data_dir, monkeypatch):
+    from app import fsutil
+
+    note = notes.create_note(data_dir, "Race", "original")
+    exchange = fsutil.exchange_files
+
+    def race(first, second):
+        external = second.with_name(".external")
+        external.write_bytes(b"external editor version")
+        external.replace(second)
+        exchange(first, second)
+
+    monkeypatch.setattr(fsutil, "exchange_files", race)
+    notes.update_note(data_dir, note.ref.id, "Race", "browser version", note.revision)
+    assert note.ref.path.read_bytes() == b"browser version"
+    versions = list((note.ref.folder / ".history").rglob("*.md"))
+    assert [p.read_bytes() for p in versions] == [b"external editor version"]
+    notes.cleanup_temp_files(data_dir)
+    assert versions[0].read_bytes() == b"external editor version"
+
+
+@pytest.mark.parametrize("after_exchange", [False, True])
+def test_interrupted_history_save_retains_both_versions(data_dir, monkeypatch, after_exchange):
+    from app import fsutil
+
+    note = notes.create_note(data_dir, "Crash", "original")
+    exchange = fsutil.exchange_files
+
+    def interrupt(first, second):
+        if after_exchange:
+            exchange(first, second)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fsutil, "exchange_files", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        notes.update_note(data_dir, note.ref.id, "Crash", "proposed", note.revision)
+    notes.cleanup_temp_files(data_dir)
+    assert {p.read_bytes() for p in note.ref.folder.rglob("*.md")} == {b"original", b"proposed"}
+
+
+def test_external_write_during_preparation_is_conflict(data_dir, monkeypatch):
+    from app import fsutil
+
+    note = notes.create_note(data_dir, "Race", "original")
+    write = fsutil.atomic_write
+
+    def race(path, data, **kwargs):
+        write(path, data, **kwargs)
+        note.ref.path.write_bytes(b"external")
+
+    monkeypatch.setattr(fsutil, "atomic_write", race)
+    with pytest.raises(notes.RevisionConflict):
+        notes.update_note(data_dir, note.ref.id, "Race", "browser", note.revision)
+    assert note.ref.path.read_bytes() == b"external"

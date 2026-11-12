@@ -146,9 +146,10 @@ def _is_note_filename(name: str) -> bool:
     return name.endswith(".md") and is_valid_title(name[:-3])
 
 
-def revision_of(data: bytes) -> str:
-    """The revision of a file's bytes: their SHA-256 hex digest."""
-    return hashlib.sha256(data).hexdigest()
+def revision_of(data: bytes, title: str) -> str:
+    """Hash both title and content with an unambiguous length-prefixed title."""
+    name = title.encode("utf-8")
+    return hashlib.sha256(len(name).to_bytes(8, "big") + name + data).hexdigest()
 
 
 def encode_content(content: str) -> bytes:
@@ -246,7 +247,7 @@ def read_note(data_dir: DataDir, note_id: str) -> Note:
     """Read one note; raise NotFound or NotUtf8."""
     ref = find_note(data_dir, note_id)
     data, content = _load(ref)
-    return Note(ref=ref, content=content, revision=revision_of(data))
+    return Note(ref=ref, content=content, revision=revision_of(data, ref.title))
 
 
 def _ensure_title_free(data_dir: DataDir, title: str, own_id: str | None = None) -> None:
@@ -276,7 +277,7 @@ def create_note(data_dir: DataDir, title: str, content: str) -> Note:
             raise
         fsutil.fsync_dir(data_dir.root)
         ref = find_note(data_dir, note_id)
-    return Note(ref=ref, content=content, revision=revision_of(data))
+    return Note(ref=ref, content=content, revision=revision_of(data, ref.title))
 
 
 def update_note(
@@ -287,7 +288,9 @@ def update_note(
     with data_dir.lock:
         ref = find_note(data_dir, note_id)
         current_data, current_content = _load(ref)
-        current = Note(ref=ref, content=current_content, revision=revision_of(current_data))
+        current = Note(
+            ref=ref, content=current_content, revision=revision_of(current_data, ref.title)
+        )
         if current.revision != base_revision:
             raise RevisionConflict(current)
         new_title = ref.title if title == ref.title else clean_title(title)
@@ -296,12 +299,18 @@ def update_note(
         if new_title != ref.title:
             _ensure_title_free(data_dir, new_title, own_id=ref.id)
         if data != current_data:
-            fsutil.atomic_write(ref.path, data)
+
+            def check_current() -> None:
+                latest = read_note(data_dir, note_id)
+                if latest.revision != base_revision:
+                    raise RevisionConflict(latest)
+
+            fsutil.replace_with_history(ref.path, data, check_current)
         if new_title != ref.title:
             ref.path.rename(fsutil.safe_child(ref.folder, new_title + ".md", _is_note_filename))
             fsutil.fsync_dir(ref.folder)
         ref = find_note(data_dir, note_id)
-    return Note(ref=ref, content=content, revision=revision_of(data))
+    return Note(ref=ref, content=content, revision=revision_of(data, ref.title))
 
 
 def trash_dir(data_dir: DataDir) -> Path:
@@ -326,13 +335,17 @@ def delete_note(data_dir: DataDir, note_id: str, now: datetime | None = None) ->
                 break
             moment += 1
         ref.folder.rename(trash / trash_id)
+        fsutil.fsync_dir(trash)
         fsutil.fsync_dir(data_dir.root)
     return trash_id
 
 
 def cleanup_temp_files(data_dir: DataDir) -> None:
     """Startup cleanup: remove leftover temp entries at the top level and inside note folders."""
-    removed = fsutil.remove_temp_entries(data_dir.root)
+    if data_dir.read_only:
+        return
+    # Older releases moved original imports into these directories. Never delete them.
+    removed = fsutil.remove_temp_entries(data_dir.root, preserve_dirs=True)
     with os.scandir(data_dir.root) as entries:
         folders = [
             Path(entry.path)
@@ -358,6 +371,8 @@ def mtime_moment(mtime: float) -> datetime:
 
 def import_loose_files(data_dir: DataDir) -> None:
     """Move every loose top-level .md file into a new note folder (the drop-in import)."""
+    if data_dir.read_only:
+        return
     with os.scandir(data_dir.root) as entries:
         names = [
             entry.name
@@ -389,17 +404,25 @@ def _import_one(data_dir: DataDir, name: str, taken: set[str]) -> None:
         return
     if not fsutil.is_real_file(source):
         return
-    temp = fsutil.create_temp_dir(data_dir.root)
-    try:
-        source.rename(temp / name)
+    fsutil.fsync_file(source)
+    # A crash leaves the original loose file or a complete note, never the only
+    # copy inside a staging directory that startup cleanup deletes.
+    while True:
         note_id = new_id(mtime_moment(mtime), _id_taken(data_dir))
-        temp.rename(data_dir.root / note_id)
+        folder = data_dir.root / note_id
+        try:
+            folder.mkdir()
+            break
+        except FileExistsError:
+            continue
+    fsutil.fsync_dir(data_dir.root)
+    try:
+        source.rename(folder / name)
     except OSError:
-        if os.path.lexists(temp / name):
-            (temp / name).rename(source)
-        shutil.rmtree(temp, ignore_errors=True)
+        folder.rmdir()
         data_dir.warn_once(logger, "Could not import %r", name)
         return
+    fsutil.fsync_dir(folder)
     fsutil.fsync_dir(data_dir.root)
     taken.add(title_key(title))
     logger.info("Imported %r as note %s", name, note_id)

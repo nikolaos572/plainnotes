@@ -17,12 +17,12 @@ data/
         └── Old note.md
 ```
 
-- **Edit files directly** with any editor or sync tool. plainnotes reads the disk on every request, so changes, renamed files and new attachments appear on the next page load. If a note changes on disk while it is open in the editor, saving shows a conflict dialog instead of overwriting.
-- **Import existing notes** by placing `.md` files directly in the data folder. On the next start or page load, each one is moved into a new note folder (the file itself and its date stay unchanged). Files whose name is not a valid title, or whose title is already used, stay where they are. Try it on a copy of your files first.
+- **Edit files directly** with any editor or sync tool. plainnotes reads the disk on every request, so changes, renamed files and new attachments appear on the next page load. Changes detected before saving show a conflict dialog. Avoid simultaneous writes with external editors: they do not participate in the app lock. Content saves retain the exact displaced file under the note folder’s hidden .history/ directory, including an external version replaced at the final instant.
+- **Import existing notes** (in writable mode) by placing `.md` files directly in the data folder. On the next start or page load, each one is moved into a new note folder (the file itself and its date stay unchanged). Files whose name is not a valid title, or whose title is already used, stay where they are. Try it on a copy of your files first.
 - **Back up** by copying the whole data folder; it contains everything.
 - **The trash:** deleting a note moves its folder, with its attachments, to `.trash/`. From the Trash page you can restore it or delete it permanently. Nothing is purged automatically.
 - **Titles** are unique (ignoring case) and cannot contain `/ \ : * ? " < > |` or start with `.`.
-- **Line endings:** files with Windows line endings (`\r\n`) keep them when you save. A file with mixed line endings is saved with `\r\n` throughout once you edit it.
+- **Line endings:** changing only the title preserves every content byte. Text edits preserve uniform LF, CRLF, or lone-CR line endings. Mixed line endings normalize to CRLF if the original contains CRLF, otherwise LF. Recovery drafts retain this information.
 - **No index:** every search and every list reads the notes from disk, so they always match the files. This stays fast up to a few thousand notes.
 
 ## Viewing and editing
@@ -31,7 +31,8 @@ data/
 - **Wrap lines:** in Text view and in the editor, untick **Wrap lines** to keep long lines (such as commands) on one line and scroll sideways instead. The choice is remembered for both.
 - **Pinned notes:** add the tag `#pinned` anywhere in a note to list it in a **Pinned** section at the top of the home page. Remove the tag to unpin it.
 - **Deleting:** **Delete** moves the note to the trash; the message that follows has an **Undo** button for a few seconds.
-- **Drafts:** unsaved changes are kept in the browser and offered again if the tab was closed. Logging out removes them.
+- **Drafts:** each editor keeps an independent recovery draft in this browser, including separate new-note tabs. Recovery is offered when you reopen the editor, even if the original note was deleted. A persistent warning appears if storage fails. Drafts are written shortly after typing pauses; the newest keystrokes may not survive an immediate crash, so save valuable work explicitly. Identical drafts are removed after that text is saved, while other versions remain until discarded. Discarding an editor copy does not delete the recovery record it was restored from; use Discard in the recovery dialog to delete that record explicitly. Logout asks before deleting this installation’s drafts and ending editing in its other tabs. Cancelling or a failed logout keeps drafts; editing pauses while the logout request is pending and resumes on failure or timeout.
+- **Upgrade:** the corrected session-key encoding requires signing in again once. Credential changes now invalidate old sessions even when values contain `|`.
 - **Printing:** printing a note (`Ctrl`/`Cmd` + `P`) leaves out the header and buttons, uses black on white in either theme, and wraps long lines so nothing is cut off.
 
 ## Markdown
@@ -61,3 +62,28 @@ In the editor, upload files with the button, by dragging them onto the editor or
 | `Ctrl`/`Cmd` + `S` or `Enter` | editor | Save |
 | `Esc` | editor | Close (asks about unsaved changes) |
 | `Tab` / `Shift` + `Tab` | editor text | Insert a tab / move focus out |
+
+## Recovering previous content
+
+Every content change retains the displaced file in `data/<note-id>/.history/<random-id>/<title>.md`.
+These are ordinary files, excluded from search and the attachment API. Failed or interrupted
+saves can also leave the proposed new content there. Compare file contents before recovery;
+folder IDs do not indicate chronological order. Copy the chosen file to a safe location,
+then restore its content through the editor or while the app and external editors are stopped.
+
+Recovery directories are private to the application owner. Run backups as that owner or an account with permission to read them.
+
+History is not automatically pruned. Include it in backups and remove unwanted versions
+manually only after checking them. Moving a note to trash keeps its history; permanently
+deleting that trash entry deletes its history too. This protects the file displaced by an
+app save, not arbitrary deletions or later overwrites performed by external programs.
+
+Content updates require Linux renameat2(RENAME_EXCHANGE), and attachment uploads require
+RENAME_NOREPLACE support on the data filesystem (as in the documented Docker deployment).
+Attachments are published from completed temporary files without creating empty placeholders;
+a filename collision selects the next numbered name. Unsupported filesystems fail safely
+rather than falling back to a replacement that could overwrite existing data.
+
+If upgrading after an interrupted import, retain any nonempty
+`.plainnotes-tmp-*` directories at the data root. Copy their Markdown files to safety
+and reimport them manually; startup deliberately leaves these legacy directories untouched.

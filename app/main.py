@@ -59,7 +59,7 @@ class _StaticFiles(StaticFiles):
 
 def create_app(settings: Settings) -> FastAPI:
     """Build an independent app instance from settings."""
-    data_dir = DataDir(settings.data_dir)
+    data_dir = DataDir(settings.data_dir, read_only=settings.read_only)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

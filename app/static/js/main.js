@@ -8,9 +8,9 @@
 
 import * as api from "./api.js";
 import { el } from "./dom.js";
-import { removeAllDrafts } from "./drafts.js";
+import { notifyLogout, removeAllDrafts } from "./drafts.js";
 import { icon } from "./icons.js";
-import { isDialogOpen, messagePage, showError } from "./ui.js";
+import { confirmAction, dismissDialogs, isDialogOpen, messagePage, showError, toast } from "./ui.js";
 import { editorView } from "./views/editor.js";
 import { listHash, listView } from "./views/list.js";
 import { loginView } from "./views/login.js";
@@ -107,19 +107,51 @@ function setTheme(theme) {
   updateHeader();
 }
 
+let loggingOut = false;
+let logoutPending = false;
+
 async function logout() {
-  if (current?.canLeave && !(await current.canLeave())) return;
+  if (loggingOut) return;
+  loggingOut = true;
   try {
-    await api.logout();
-  } catch (error) {
-    if (error.code !== "not_authenticated") {
-      showError(error);
-      return;
+    // Collect choices without deleting drafts: either dialog or the request can fail/cancel.
+    const source = current;
+    if (source?.prepareLogout && !(await source.prepareLogout())) return;
+    if (current !== source) return;
+    if (!(await confirmAction(
+      "Log out and delete recovery drafts?",
+      "This deletes recovery drafts for this installation and ends editing in all its open tabs. " +
+        "Save changes in other tabs first.",
+      { label: "Log out", kind: "danger", icon: "log-out" },
+    ))) return;
+    logoutPending = true;
+    main.inert = true;
+    header.inert = true;
+    toast("Logging out…");
+    try {
+      await api.logout();
+    } catch (error) {
+      if (error.code !== "not_authenticated") {
+        showError(error);
+        return;
+      }
     }
+    // The server session has ended. Old editors must not recreate deleted drafts.
+    try {
+      await removeAllDrafts();
+    } catch {
+      notifyLogout();
+      showError(new Error("Recovery drafts could not be erased. Clear browser site data after logging out."));
+    }
+    dismissDialogs();
+    app.session = null;
+    app.navigate("#/login", { replace: true });
+  } finally {
+    main.inert = false;
+    header.inert = false;
+    logoutPending = false;
+    loggingOut = false;
   }
-  removeAllDrafts();
-  app.session = null;
-  location.hash = "#/login";
 }
 
 const menu = el("details", { class: "menu" });
@@ -223,6 +255,10 @@ async function show(hash) {
 }
 
 async function onHashChange() {
+  if (logoutPending) {
+    history.replaceState(null, "", currentHash);
+    return;
+  }
   if (guarding) return;
   let hash = normalized(location.hash);
   if (hash === currentHash) return;
@@ -246,6 +282,10 @@ function inTextField(target) {
 }
 
 function onKeydown(event) {
+  if (logoutPending) {
+    event.preventDefault();
+    return;
+  }
   if (event.isComposing || isDialogOpen()) return;
   if (current?.keydown?.(event)) return;
   if (event.ctrlKey || event.metaKey || event.altKey || inTextField(event.target)) return;
@@ -274,6 +314,12 @@ document.addEventListener("click", (event) => {
 });
 menu.addEventListener("click", (event) => {
   if (event.target.closest(".menu-item")) menu.open = false;
+});
+
+window.addEventListener("plainnotes:logout", () => {
+  dismissDialogs();
+  app.session = null;
+  app.navigate("#/login", { replace: true });
 });
 
 async function boot() {

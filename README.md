@@ -10,7 +10,7 @@ A self-hosted, single-user web app for writing and finding notes that are stored
 - **Write in plain text, read as Markdown.** A plain-text editor, a Text view that shows the file exactly as stored, and a Markdown view with a Copy button on every code block.
 - **Find things again.** `#tags` anywhere in the text, `[[wikilinks]]` between notes, pinned notes, and search that ignores case and accents.
 - **Attachments of any type and size:** upload them, drag and drop them, or paste a screenshot.
-- **Nothing gets lost:** atomic saves, a conflict check when a file changed somewhere else, a trash with undo, and unsaved edits kept in the browser.
+- **Recovery safeguards:** atomic saves with retained previous content, title/content conflict checks, trash with undo, and independent browser drafts. Keep backups too; [recovery details](docs/guide.md#recovering-previous-content) explain the limits.
 - **Small and locked down:** one Docker image that runs as non-root with a read-only filesystem, a strict Content Security Policy, and nothing loaded from the internet.
 - Light, dark and auto themes, keyboard shortcuts, printing, a read-only mode and hosting under a sub-path.
 
@@ -90,7 +90,7 @@ Everything is configured with environment variables. An invalid value stops the 
 | `PLAINNOTES_USERNAME` | required | Login name (case-sensitive) |
 | `PLAINNOTES_PASSWORD` | required | Login password; a warning is logged if it is shorter than 12 characters |
 | `PLAINNOTES_SECRET_KEY` | required | At least 32 characters; signs session cookies |
-| `PLAINNOTES_DATA_DIR` | `/data` | Folder with the notes; must exist and be writable |
+| `PLAINNOTES_DATA_DIR` | `/data` | Folder with the notes; must exist and be writable unless read-only mode is enabled |
 | `PLAINNOTES_HOST` | `0.0.0.0` | Listen address |
 | `PLAINNOTES_PORT` | `8080` | Listen port (1–65535) |
 | `PLAINNOTES_SESSION_DAYS` | `30` | How long a login lasts (1–365); sessions are renewed while you use them |
