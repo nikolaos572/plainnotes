@@ -360,3 +360,22 @@ def test_attachment_parent_sync_failure_is_retried(data_dir, monkeypatch):
     upload.write(b"complete")
     upload.finish(data_dir, "retry.txt")
     assert (note.ref.folder / "attachments" / "retry.txt").read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("error", [errno.ENOSPC, errno.EIO])
+def test_discard_unlinks_temp_even_when_close_fails(data_dir, error):
+    note = notes.create_note(data_dir, "Cleanup", "original")
+    upload = attachments.Upload(data_dir, note.ref.id)
+    original = upload.file
+
+    class BrokenClose:
+        def close(self):
+            original.close()
+            raise OSError(error, "injected close failure")
+
+    upload.file = BrokenClose()
+    expected = fsutil.StorageFull if error == errno.ENOSPC else OSError
+    with pytest.raises(expected):
+        upload.discard()
+    assert not upload.temp.exists()
+    assert note.ref.path.read_text() == "original"

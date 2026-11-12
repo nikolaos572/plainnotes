@@ -196,8 +196,13 @@ class Upload:
 
     def discard(self) -> None:
         """Close and delete the temp file."""
-        self.file.close()
-        self.temp.unlink(missing_ok=True)
+        try:
+            self.file.close()
+        except OSError as exc:
+            fsutil.raise_if_full(exc)
+            raise
+        finally:
+            self.temp.unlink(missing_ok=True)
 
     def finish(self, data_dir: DataDir, requested_name: str) -> AttachmentInfo:
         """Move the temp file to a free final name; never overwrites an existing file."""
