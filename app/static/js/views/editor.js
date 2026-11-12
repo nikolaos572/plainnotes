@@ -192,7 +192,7 @@ export async function editorView({ id, query }, app) {
   let draftTimer = null;
   let owner = null;
   const ownerReady = drafts.beginEditor().catch(() => null);
-  let movedDraftId = null;
+  const priorDraftIds = new Set();
   let draftWork = Promise.resolve(true);
   let restoredDraft = null;
   const draftWarning = el("p", {
@@ -291,6 +291,7 @@ export async function editorView({ id, query }, app) {
   async function applySaved(saved, sentTitle, sentValue) {
     const oldId = state.id;
     const wasNew = oldId === null;
+    if (wasNew) priorDraftIds.add(oldId);
     state.id = saved.id;
     state.revision = saved.revision;
     if (titleInput.value === sentTitle) titleInput.value = saved.title;
@@ -303,25 +304,26 @@ export async function editorView({ id, query }, app) {
     }
     if (wasNew) renderPanel();
     refresh();
+    // Persist edits typed during the request before deleting their previous recovery key.
+    if (!(await writeDraft())) return;
     await queueDraft(async (editor) => {
-      if (wasNew) await drafts.removeDraft(oldId, editor);
-      if (movedDraftId !== null) {
-        await drafts.removeDraft(movedDraftId, editor);
-        await drafts.removeMatchingDrafts(movedDraftId, saved.title, sentValue, saved.content);
-        movedDraftId = null;
+      for (const priorId of priorDraftIds) {
+        await drafts.removeDraft(priorId, editor);
+        await drafts.removeMatchingDrafts(priorId, saved.title, sentValue, saved.content);
+        priorDraftIds.delete(priorId);
       }
-      await drafts.removeMatchingDrafts(oldId, saved.title, sentValue, saved.content);
+      await drafts.removeMatchingDrafts(saved.id, saved.title, sentValue, saved.content);
       if (restoredDraft?.content === sentValue && restoredDraft?.title === saved.title
           && (restoredDraft.rawContent === undefined || restoredDraft.rawContent === saved.content)) {
         await drafts.discardDraft(restoredDraft);
         restoredDraft = null;
       }
     });
-    await writeDraft();
   }
 
   async function attemptSave() {
     for (;;) {
+      if (destroyed) return false;
       const title = titleInput.value;
       const value = textarea.value;
       const content = contentForSave();
@@ -334,6 +336,7 @@ export async function editorView({ id, query }, app) {
         if (!destroyed) toast("Saved");
         return !isDirty();
       } catch (error) {
+        if (destroyed) return false;
         if (error.code === "revision_conflict") {
           const current = error.body.current;
           const choice = await askAboutConflict();
@@ -359,7 +362,7 @@ export async function editorView({ id, query }, app) {
         if (error.code === "not_found" && state.id) {
           if ((await askSaveAsNew()) !== "new") return false;
           await writeDraft();
-          movedDraftId = state.id;
+          priorDraftIds.add(state.id);
           state.id = null;
           state.revision = null;
           continue;

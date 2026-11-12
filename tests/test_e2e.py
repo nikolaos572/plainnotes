@@ -1403,3 +1403,67 @@ def test_successful_local_logout_closes_late_dialog(page):
     held[0].fulfill(response=held[0].fetch())
     expect(page.get_by_label("Username")).to_be_visible()
     expect(page.locator("dialog")).to_have_count(0)
+
+
+@pytest.mark.parametrize("status", [404, 409])
+def test_late_save_error_does_not_open_dialog_after_logout(context, page, status):
+    note = create_note(page, unique("Late error"), "original")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.get_by_label("Note text").fill("pending")
+    held = []
+    page.route(f"**/api/notes/{note['id']}", lambda route: held.append(route))
+    page.keyboard.press("Control+s")
+    expect(page.get_by_role("button", name="Save", exact=False)).to_be_disabled()
+    other = context.new_page()
+    other.goto("#/")
+    other.get_by_text("Menu", exact=True).click()
+    other.get_by_role("button", name="Log out", exact=True).click()
+    other.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
+    expect(page.get_by_label("Username")).to_be_visible()
+    body = {"code": "not_found", "detail": "Missing"}
+    if status == 409:
+        body = {"code": "revision_conflict", "detail": "Changed", "current": note}
+    held[0].fulfill(status=status, content_type="application/json", body=json.dumps(body))
+    page.wait_for_timeout(300)
+    expect(page.locator("dialog")).to_have_count(0)
+    expect(page).to_have_title("plainnotes")
+
+
+def test_new_note_save_keeps_old_draft_if_migration_fails(page, server):
+    title = unique("Migration")
+    page.goto("#/new")
+    page.get_by_label("Title").fill(title)
+    page.get_by_label("Note text").fill("sent text")
+    wait_for_draft(page, "new")
+    held = []
+    page.route("**/api/notes", lambda route: held.append((route, route.fetch())))
+    page.keyboard.press("Control+s")
+    expect(page.get_by_role("button", name="Save", exact=False)).to_be_disabled()
+    page.get_by_label("Note text").fill("sent text plus newer unsaved text")
+    eventually(
+        lambda: (draft(page, "new") or {}).get("content") == "sent text plus newer unsaved text",
+        "newest draft not written",
+    )
+    page.evaluate("""() => {
+        const original = IDBObjectStore.prototype.put;
+        window.restoreDraftWrites = () => { IDBObjectStore.prototype.put = original; };
+        IDBObjectStore.prototype.put = function(value, ...args) {
+            if (value.kind === "draft" && value.noteId !== null) {
+                throw new DOMException("Injected migration quota", "QuotaExceededError");
+            }
+            return original.call(this, value, ...args);
+        };
+    }""")
+    held[0][0].fulfill(response=held[0][1])
+    expect(page.locator("#draft-warning")).to_be_visible()
+    expect(page.get_by_role("button", name="Save", exact=False)).to_be_enabled()
+    preserved = draft(page, "new")
+    assert preserved and preserved["content"] == "sent text plus newer unsaved text"
+    assert next(server.data.glob(f"*/{title}.md")).read_text() == "sent text"
+    page.evaluate("window.restoreDraftWrites()")
+    page.keyboard.press("Control+s")
+    expect(page.locator(".dirty-dot")).to_be_hidden()
+    wait_for_no_draft(page, "new")
+    assert (
+        next(server.data.glob(f"*/{title}.md")).read_text() == "sent text plus newer unsaved text"
+    )
