@@ -78,9 +78,11 @@ manually only after checking them. Moving a note to trash keeps its history; per
 deleting that trash entry deletes its history too. This protects the file displaced by an
 app save, not arbitrary deletions or later overwrites performed by external programs.
 
-Content updates require Linux renameat2(RENAME_EXCHANGE) support on the data filesystem
-(as in the documented Docker deployment). Unsupported filesystems fail the save safely
-rather than falling back to a replacement that could lose a concurrent version.
+Content updates require Linux renameat2(RENAME_EXCHANGE), and attachment uploads require
+RENAME_NOREPLACE support on the data filesystem (as in the documented Docker deployment).
+Attachments are published from completed temporary files without creating empty placeholders;
+a filename collision selects the next numbered name. Unsupported filesystems fail safely
+rather than falling back to a replacement that could overwrite existing data.
 
 If upgrading after an interrupted import, retain any nonempty
 `.plainnotes-tmp-*` directories at the data root. Copy their Markdown files to safety

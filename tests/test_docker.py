@@ -184,6 +184,16 @@ def test_hardened_container_updates_and_reads_a_readonly_mount(image, data_folde
             },
         )
         assert saved.status_code == 200, saved.text
+        attachment_url = f"/api/notes/{note['id']}/attachments/same.txt"
+        first = client.put(attachment_url, content=b"first complete upload")
+        second = client.put(attachment_url, content=b"second complete upload")
+        assert first.status_code == second.status_code == 201
+        assert first.json()["name"] == "same.txt"
+        assert second.json()["name"] == "same (1).txt"
+        assert client.get(attachment_url).content == b"first complete upload"
+        assert (data_folder / note["id"] / "attachments" / "same (1).txt").read_bytes() == (
+            b"second complete upload"
+        )
     history = data_folder / note["id"] / ".history"
     assert [path.read_text() for path in history.rglob("*.md")] == ["from the test\n"]
     docker("stop", container)

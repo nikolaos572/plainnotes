@@ -20,6 +20,9 @@ MAX_NAME_BYTES = 255
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+_RENAME_EXCHANGE = 2
 _FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 
@@ -129,11 +132,6 @@ def create_temp_file(directory: Path, *, mode: int = 0o666) -> tuple[int, Path]:
             continue
 
 
-def reserve(path: Path) -> None:
-    """Create an empty file with an exclusive create; raise FileExistsError if path exists."""
-    os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o666))
-
-
 def create_temp_dir(parent: Path) -> Path:
     """Create a new, empty temp folder inside parent and return its path."""
     while True:
@@ -214,24 +212,34 @@ def remove_temp_entries(folder: Path, *, preserve_dirs: bool = False) -> int:
     return removed
 
 
-def exchange_files(first: Path, second: Path) -> None:
-    """Atomically exchange two existing paths on Linux; never fall back to replacement."""
+def _renameat2(first: Path, second: Path, flags: int) -> None:
+    """Call Linux renameat2; never emulate atomic flags with multiple operations."""
     libc = ctypes.CDLL(None, use_errno=True)
     try:
-        exchange = libc.renameat2
+        rename = libc.renameat2
     except AttributeError:
-        raise OSError(errno.ENOSYS, "Atomic exchange is unavailable on this platform") from None
-    exchange.argtypes = [
+        raise OSError(errno.ENOSYS, "Atomic rename is unavailable on this platform") from None
+    rename.argtypes = [
         ctypes.c_int,
         ctypes.c_char_p,
         ctypes.c_int,
         ctypes.c_char_p,
         ctypes.c_uint,
     ]
-    exchange.restype = ctypes.c_int
-    if exchange(-100, os.fsencode(first), -100, os.fsencode(second), 2) != 0:
+    rename.restype = ctypes.c_int
+    if rename(_AT_FDCWD, os.fsencode(first), _AT_FDCWD, os.fsencode(second), flags) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
+
+
+def exchange_files(first: Path, second: Path) -> None:
+    """Atomically exchange two existing paths on Linux."""
+    _renameat2(first, second, _RENAME_EXCHANGE)
+
+
+def rename_no_replace(source: Path, target: Path) -> None:
+    """Atomically publish source only if target does not exist, including dangling symlinks."""
+    _renameat2(source, target, _RENAME_NOREPLACE)
 
 
 def replace_with_history(target: Path, data: bytes, check_current: Callable[[], None]) -> None:

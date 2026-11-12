@@ -247,3 +247,51 @@ def test_history_is_private_and_published_note_keeps_mode(tmp_path):
     assert len(versions) == 1
     assert stat.S_IMODE(versions[0].stat().st_mode) == 0o700
     assert (versions[0] / "Note.md").read_bytes() == b"original"
+
+
+def test_no_replace_publishes_complete_file(tmp_path):
+    source = tmp_path / "staged"
+    target = tmp_path / "published"
+    source.write_bytes(b"complete")
+    fsutil.rename_no_replace(source, target)
+    assert not source.exists()
+    assert target.read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "dangling"])
+def test_no_replace_refuses_every_existing_destination(tmp_path, kind):
+    source = tmp_path / "staged"
+    source.write_bytes(b"new data")
+    target = tmp_path / "destination"
+    protected = tmp_path / "protected"
+    protected.write_bytes(b"keep")
+    if kind == "file":
+        target.write_bytes(b"original")
+    elif kind == "directory":
+        target.mkdir()
+        (target / "child").write_bytes(b"original")
+    else:
+        target.symlink_to(protected if kind == "symlink" else tmp_path / "missing")
+    with pytest.raises(FileExistsError):
+        fsutil.rename_no_replace(source, target)
+    assert source.read_bytes() == b"new data"
+    assert protected.read_bytes() == b"keep"
+    if kind == "file":
+        assert target.read_bytes() == b"original"
+    elif kind == "directory":
+        assert (target / "child").read_bytes() == b"original"
+    else:
+        assert target.is_symlink()
+
+
+def test_missing_renameat2_never_falls_back_to_overwrite(tmp_path, monkeypatch):
+    source = tmp_path / "staged"
+    target = tmp_path / "existing"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    monkeypatch.setattr(fsutil.ctypes, "CDLL", lambda *_args, **_kwargs: object())
+    with pytest.raises(OSError) as error:
+        fsutil.rename_no_replace(source, target)
+    assert error.value.errno == errno.ENOSYS
+    assert source.read_bytes() == b"new"
+    assert target.read_bytes() == b"old"
