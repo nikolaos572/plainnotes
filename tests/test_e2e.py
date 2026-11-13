@@ -523,6 +523,30 @@ def test_undo_after_moving_a_note_to_the_trash(page: Page, server: Server) -> No
     assert all(entry["id"] != note["id"] for entry in api(page, "GET", "api/trash"))
 
 
+def test_emptying_the_trash_deletes_only_the_notes_it_showed(page: Page, server: Server) -> None:
+    shown = create_note(page, unique("Shown in the trash"), "junk\n")
+    api(page, "DELETE", f"api/notes/{shown['id']}")
+    page.goto("#/trash")
+    expect(page.locator(".trash-list")).to_contain_text(shown["title"])
+    count = page.locator(".trash-list li").count()
+    # Moved to the trash in another tab after this page loaded: the dialog never counted it.
+    later = create_note(page, unique("Trashed meanwhile"), "only copy\n")
+    api(page, "DELETE", f"api/notes/{later['id']}")
+    page.get_by_role("button", name="Empty trash").click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_contain_text(f"{count} deleted note")
+    dialog.get_by_role("button", name="Empty trash").click()
+    expect(page.locator(".toast").last).to_have_text("Trash emptied")
+    expect(page.locator(".trash-list li")).to_have_count(1)
+    expect(page.locator(".trash-list")).to_contain_text(later["title"])
+    [entry] = api(page, "GET", "api/trash")
+    assert entry["id"] == later["id"]
+    assert not (server.data / shown["id"]).exists()
+    api(page, "POST", f"api/trash/{entry['trash_id']}/restore")
+    assert note_file(server, later).read_text() == "only copy\n"
+
+
+
 def overflows(element: Locator) -> bool:
     """True if the element's content is wider than the element (it scrolls sideways)."""
     return element.evaluate("element => element.scrollWidth > element.clientWidth")
