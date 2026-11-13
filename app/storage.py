@@ -19,13 +19,24 @@ from app.config import ConfigError
 
 NOTES_DIR = "notes"
 TESTING_DIR = "testing"
-_DENIED = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+_DENIED = frozenset({errno.EACCES, errno.EPERM})
 
 UNSUPPORTED_STORAGE = (
     "Saving is turned off: the storage that holds your notes does not support the safe file "
-    "operations plainnotes needs ({missing}). Network shares (NFS, SMB) and some filesystems "
-    "lack them. Your notes are shown read-only. Move the data folder to a local Linux "
-    "filesystem such as ext4, XFS or btrfs, then restart plainnotes."
+    "operations plainnotes needs ({missing}). Network shares (NFS, SMB), ZFS before OpenZFS 2.2 "
+    "and some other filesystems lack them. Your notes are shown read-only. Move the data folder "
+    "to a local Linux filesystem such as ext4, XFS, btrfs or ZFS 2.2 or later, then restart "
+    "plainnotes."
+)
+DISK_FULL = (
+    "Saving is turned off: the disk that holds your notes was full at startup, so the storage "
+    "check could not run. Your notes are shown read-only. Free some space, then restart "
+    "plainnotes."
+)
+READ_ONLY_STORAGE = (
+    "Saving is turned off: the storage that holds your notes is read-only. Your notes are shown "
+    "read-only. Check the disk and how it is mounted, then restart plainnotes. To serve a "
+    "read-only copy on purpose, set PLAINNOTES_READ_ONLY=true."
 )
 
 
@@ -122,9 +133,16 @@ def prepare(data_dir: Path, *, read_only: bool = False) -> Prepared:
         missing = fsutil.missing_atomic_renames(testing_path)
         if not os.access(notes_path, os.W_OK | os.X_OK):
             raise PermissionError(errno.EACCES, "not writable")
-    except fsutil.StorageFull:
-        raise ConfigError(f"PLAINNOTES_DATA_DIR: the disk that holds {data_dir} is full.") from None
     except OSError as exc:
+        if exc.errno in fsutil.FULL_ERRNOS:
+            reason = DISK_FULL
+        elif exc.errno == errno.EROFS:
+            reason = READ_ONLY_STORAGE
+        else:
+            reason = ""
+        if reason and fsutil.is_real_dir(notes_path):
+            # The notes can still be shown; saving stays off until the storage is fixed.
+            return Prepared(reason, warnings)
         if exc.errno in _DENIED:
             raise _not_writable(data_dir) from None
         raise ConfigError(

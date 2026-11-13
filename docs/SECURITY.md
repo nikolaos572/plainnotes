@@ -119,7 +119,8 @@ Nothing in `notes/` is ever deleted automatically. A hidden temp file left by an
 interrupted save or upload stays where it is and is never shown. A storage check at every
 start tries RENAME_EXCHANGE and RENAME_NOREPLACE on new files in the data folder's `testing/`
 folder, which is used for nothing else and is emptied first; it never touches the notes. If
-either operation is missing, the server runs read-only and shows the reason on every page.
+either operation is missing, or the disk is full or read-only at startup, the server runs
+read-only and shows the reason on every page.
 
 Drafts are scoped by installation path and editor instance in IndexedDB. Logout asks
 before deleting recovery drafts; after server logout succeeds, it invalidates old editors

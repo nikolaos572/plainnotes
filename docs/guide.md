@@ -89,7 +89,8 @@ Attachments are published from completed temporary files without creating empty 
 a filename collision selects the next numbered name. plainnotes never falls back to a
 replacement that could overwrite existing data. Instead, it tries both operations at every
 start on its own new files in `testing/`. If either is unsupported (as on NFS or SMB shares),
-it runs read-only, logs the reason and shows it at the top of every page.
+it runs read-only, logs the reason and shows it at the top of every page. The same happens
+when the disk is full or read-only at startup; free space or fix the mount, then restart.
 
 Saves and uploads write a hidden `.plainnotes-tmp-…` file or folder next to their target and
 rename it into place when it is complete. If the server stops in that moment, the hidden copy

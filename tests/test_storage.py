@@ -154,6 +154,37 @@ def test_unsupported_storage_turns_saving_off(tmp_path, monkeypatch, flag, name)
     assert list((tmp_path / "testing").iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        (errno.ENOSPC, storage.DISK_FULL),
+        (errno.EDQUOT, storage.DISK_FULL),
+        (errno.EROFS, storage.READ_ONLY_STORAGE),
+    ],
+    ids=["ENOSPC", "EDQUOT", "EROFS"],
+)
+def test_full_or_read_only_storage_turns_saving_off(tmp_path, monkeypatch, code, reason):
+    # The check cannot write, but the notes can still be shown: start read-only, do not stop.
+    (tmp_path / "notes" / NOTE_ID).mkdir(parents=True)
+
+    def cannot_write(_folder: Path) -> list[str]:
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(fsutil, "missing_atomic_renames", cannot_write)
+    assert storage.prepare(tmp_path).read_only_reason == reason
+
+
+@pytest.mark.parametrize("code", [errno.ENOSPC, errno.EROFS])
+def test_full_or_read_only_storage_without_notes_stops_startup(tmp_path, monkeypatch, code):
+    def cannot_create(*_args: object, **_kwargs: object) -> None:
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(Path, "mkdir", cannot_create)
+    with pytest.raises(ConfigError, match=f"cannot be prepared: {os.strerror(code)}") as raised:
+        storage.prepare(tmp_path)
+    assert "chown" not in str(raised.value)  # changing the owner cannot help here
+
+
 def test_other_check_failures_stop_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(fsutil, "_renameat2", unsupported(fsutil._RENAME_EXCHANGE, errno.EIO))
     with pytest.raises(ConfigError, match="cannot be prepared"):
