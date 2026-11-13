@@ -1,6 +1,7 @@
 """Container smoke tests: build the image, run it, and use it over HTTP."""
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -16,6 +17,8 @@ from tests.conftest import CSRF, PASSWORD, SECRET_KEY, USERNAME
 pytestmark = pytest.mark.docker
 ROOT = Path(__file__).resolve().parent.parent
 HARDENED = ["--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+APP_UID = 61001  # the user the image runs as; it matches no real account on a host
+APP_USER = f"{APP_UID}:{APP_UID}"
 
 
 def docker(*args: str, check: bool = True) -> str:
@@ -43,8 +46,20 @@ def image() -> Iterator[str]:
 def data_folder(tmp_path: Path) -> Path:
     folder = tmp_path / "data"
     folder.mkdir()
-    folder.chmod(0o777)  # the CI runner's user is not UID 1000
+    folder.chmod(0o777)  # writable by the container's user, which the test's user is not
     return folder
+
+
+@pytest.fixture
+def owned_data_folder(image: str, tmp_path: Path) -> Iterator[Path]:
+    """A data folder prepared as the README says: given to the container's user."""
+    folder = tmp_path / "owned"
+    folder.mkdir()
+    as_root = ["run", "--rm", "--user", "0", "-v", f"{folder}:/data", image]
+    docker(*as_root, "chown", APP_USER, "/data")  # sudo chown on the host, without sudo
+    yield folder
+    # Hand everything back to the test's user, so pytest can delete it.
+    docker(*as_root, "chown", "-R", f"{os.getuid()}:{os.getgid()}", "/data", check=False)
 
 
 def start(image: str, data: Path, *extra: str) -> str:
@@ -108,18 +123,18 @@ def create_note_over_http(container: str, title: str) -> dict:
         return note.json()
 
 
-def test_container(image: str, data_folder: Path, containers: list[str]) -> None:
-    container = start(image, data_folder)
+def test_container(image: str, owned_data_folder: Path, containers: list[str]) -> None:
+    container = start(image, owned_data_folder)
     containers.append(container)
     wait_healthy(container)
-    assert docker("exec", container, "id", "-u") == "1000"
-    assert docker("exec", container, "id", "-g") == "1000"
+    assert docker("exec", container, "id", "-u") == str(APP_UID)
+    assert docker("exec", container, "id", "-g") == str(APP_UID)
     note = create_note_over_http(container, "Made in Docker")
-    path = data_folder / "notes" / note["id"] / "Made in Docker.md"
+    path = owned_data_folder / "notes" / note["id"] / "Made in Docker.md"
     assert path.read_text() == "from the test\n"
-    assert path.stat().st_uid == 1000
-    testing = data_folder / "testing"
-    assert testing.stat().st_uid == 1000
+    assert (path.stat().st_uid, path.stat().st_gid) == (APP_UID, APP_UID)
+    testing = owned_data_folder / "testing"
+    assert testing.stat().st_uid == APP_UID
     assert list(testing.iterdir()) == []  # the storage check cleaned up after itself
 
 
@@ -128,12 +143,12 @@ def test_container_hardened(image: str, data_folder: Path, containers: list[str]
     containers.append(container)
     wait_healthy(container)
     note = create_note_over_http(container, "Read-only root")
-    assert (data_folder / "notes" / note["id"] / "Read-only root.md").stat().st_uid == 1000
+    assert (data_folder / "notes" / note["id"] / "Read-only root.md").stat().st_uid == APP_UID
 
 
 def test_image_is_small_and_unprivileged(image: str) -> None:
     config = json.loads(docker("image", "inspect", image))[0]
-    assert config["Config"]["User"] == "1000:1000"
+    assert config["Config"]["User"] == APP_USER
     assert config["Config"]["Healthcheck"]["Test"] == ["CMD", "python", "-m", "app.healthcheck"]
     assert "Volumes" not in config["Config"] or not config["Config"]["Volumes"]
     assert config["Size"] < 200 * 1024 * 1024
@@ -141,14 +156,12 @@ def test_image_is_small_and_unprivileged(image: str) -> None:
 
 def test_unwritable_data_folder_exits_with_a_message(image: str, tmp_path: Path) -> None:
     folder = tmp_path / "locked"
-    folder.mkdir(mode=0o755)
+    folder.mkdir(mode=0o755)  # owned by the test's user (or root), not by the container's
     result = subprocess.run(
         [
             "docker",
             "run",
             "--rm",
-            "--user",
-            "4321:4321",
             "-v",
             f"{folder}:/data",
             "-e",
@@ -166,8 +179,8 @@ def test_unwritable_data_folder_exits_with_a_message(image: str, tmp_path: Path)
     )
     assert result.returncode == 1
     assert (
-        "Data directory /data is not writable by uid 4321. "
-        "Fix it on the host with: sudo chown -R 4321:4321 <your data folder>"
+        f"Data directory /data is not writable by uid {APP_UID}. "
+        f"Fix it on the host with: sudo chown -R {APP_USER} <your data folder>"
     ) in result.stdout + result.stderr
 
 

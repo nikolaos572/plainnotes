@@ -22,9 +22,10 @@ data/
 - **Never put anything in `testing/`:** it is used only by the storage check at startup, which first deletes its contents. plainnotes never writes anywhere else outside `notes/`.
 - **Earlier versions** kept the note folders and `.trash` directly in the data folder. plainnotes refuses to start on that layout and says so in its log; move them into `notes/` first.
 
+- **Ownership:** in Docker, plainnotes runs as UID 61001, which matches no account on the host, so everything it writes belongs to 61001. Your own account can read the notes and attachments (but not the private `.history` folders) and cannot change them. Add, edit, import or restore files with `sudo`, then give them to plainnotes: `sudo chown -R 61001:61001 data/notes`.
 - **Edit files directly** with any editor or sync tool. plainnotes reads the disk on every request, so changes, renamed files and new attachments appear on the next page load. Changes detected before saving show a conflict dialog. Avoid simultaneous writes with external editors: they do not participate in the app lock. Content saves retain the exact displaced file under the note folder’s hidden .history/ directory, including an external version replaced at the final instant.
 - **Import existing notes** (in writable mode) by placing `.md` files directly in the `notes/` folder. On the next start or page load, each one is moved into a new note folder (the file itself and its date stay unchanged). Files whose name is not a valid title, whose title is already used, or that plainnotes cannot read stay where they are, and the server log says why. Try it on a copy of your files first.
-- **Back up** by copying the whole data folder; it contains everything.
+- **Back up** by copying the whole data folder as root (`sudo`), so that the private `.history` folders are included; it contains everything.
 - **The trash:** deleting a note moves its folder, with its attachments, to `.trash/`. From the Trash page you can restore it or delete it permanently. Nothing is purged automatically.
 - **Titles** are unique (ignoring case) and cannot contain `/ \ : * ? " < > |` or start with `.`.
 - **Line endings:** changing only the title preserves every content byte. Text edits preserve uniform LF, CRLF, or lone-CR line endings. Mixed line endings normalize to CRLF if the original contains CRLF, otherwise LF. Recovery drafts retain this information.
@@ -75,7 +76,7 @@ saves can also leave the proposed new content there. Compare file contents befor
 folder IDs do not indicate chronological order. Copy the chosen file to a safe location,
 then restore its content through the editor or while the app and external editors are stopped.
 
-Recovery directories are private to the application owner. Run backups as that owner or an account with permission to read them.
+Recovery directories are private to the user plainnotes runs as (UID 61001 in Docker). Run backups as root (`sudo`) so that they include them.
 
 History is not automatically pruned. Include it in backups and remove unwanted versions
 manually only after checking them. Moving a note to trash keeps its history; permanently

@@ -11,9 +11,12 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --require-hashes -r requirements.txt
 COPY app ./app
-RUN mkdir /data && chown 1000:1000 /data
+# Run as UID/GID 61001. That is above the range Linux gives to real accounts (up to 60000),
+# so it matches no login on the host, such as uid 1000, which often has passwordless sudo.
+# A host data folder must be owned by 61001 (see the README).
+RUN mkdir /data && chown 61001:61001 /data
 
-USER 1000:1000
+USER 61001:61001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-m", "app.healthcheck"]
