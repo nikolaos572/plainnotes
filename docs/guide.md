@@ -1,6 +1,6 @@
 # User guide
 
-How plainnotes stores your notes and how to use it. To install and configure it, see the [README](../README.md).
+How plainnotes stores your notes and how to use it. To install it, see the [README](../README.md); to configure it, see [Configuration](configuration.md).
 
 ## Your data
 
@@ -13,7 +13,7 @@ data/
 │   │       └── compose.yml
 │   ├── 20261018-150011-a71c/
 │   │   └── Shopping list.md
-│   └── .trash/
+│   └── .trash/                        deleted notes, until you delete them for good
 │       └── 20261019-101500_20261017-090000-zz12/
 │           └── Old note.md
 └── testing/                           used only by the storage check at startup
