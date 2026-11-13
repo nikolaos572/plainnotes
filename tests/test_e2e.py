@@ -1034,6 +1034,8 @@ def test_saving_other_tab_keeps_independent_draft(context, page):
     other.get_by_label("Note text").fill("B saved")
     other.keyboard.press("Control+s")
     expect(other.locator(".dirty-dot")).to_be_hidden()
+    # "Saved" appears only after the saved text's drafts are removed.
+    expect(other.locator(".toast").last).to_have_text("Saved")
     assert [d["content"] for d in all_drafts(other, note["id"])] == ["A unsaved"]
     page.close()
     other.close()
@@ -1058,6 +1060,7 @@ def test_two_new_notes_have_distinct_drafts(context, page):
     eventually(lambda: len(all_drafts(page, None)) == 2, "two independent new-note drafts missing")
     other.keyboard.press("Control+s")
     expect(other.locator(".dirty-dot")).to_be_hidden()
+    expect(other.locator(".toast").last).to_have_text("Saved")
     assert [d["content"] for d in all_drafts(page, None)] == ["first draft"]
 
 
