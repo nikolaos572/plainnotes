@@ -201,8 +201,17 @@ def test_hardened_container_updates_and_reads_a_readonly_mount(image, data_folde
         assert (notes / note["id"] / "attachments" / "same (1).txt").read_bytes() == (
             b"second complete upload"
         )
-    history = data_folder / "notes" / note["id"] / ".history"
-    assert [path.read_text() for path in history.rglob("*.md")] == ["from the test\n"]
+    # History is private to the container's user, so read it from inside (CI runs as another uid).
+    history = docker(
+        "exec",
+        container,
+        "python",
+        "-c",
+        "import pathlib, sys; "
+        "print([p.read_text() for p in pathlib.Path(sys.argv[1]).rglob('*.md')])",
+        f"/data/notes/{note['id']}/.history",
+    )
+    assert history == repr(["from the test\n"])
     docker("stop", container)
     loose = data_folder / "notes" / "Do not import.md"
     loose.write_text("untouched")
