@@ -180,8 +180,10 @@ class Upload:
 
     def __init__(self, data_dir: DataDir, note_id: str) -> None:
         self.note_id = note_id
-        self.folder = _folder(notes.find_note(data_dir, note_id), create=True)
-        fd, self.temp = fsutil.create_temp_file(self.folder)
+        # Locked, so the note cannot move to the trash between the lookup and the create.
+        with data_dir.lock:
+            self.folder = _folder(notes.find_note(data_dir, note_id), create=True)
+            fd, self.temp = fsutil.create_temp_file(self.folder)
         self.file = os.fdopen(fd, "wb")
         self.size = 0
 

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import notes
+from tests.conftest import CSRF, login
 
 ROUND_TRIP = (
     "﻿BOM first\n"
@@ -295,11 +296,29 @@ def test_drop_in_import(client: TestClient, data_root: Path, endpoint: str) -> N
 
 def test_import_at_startup(app_factory: Callable, data_root: Path) -> None:
     (data_root / "At startup.md").write_text("hello")
-    (data_root / ".plainnotes-tmp-leftover").mkdir()
+    (data_root / ".hidden-but-mine").mkdir()
     with TestClient(app_factory()):
         pass
     names = sorted(p.name for p in data_root.iterdir())
-    assert len(names) == 1 and notes.is_note_id(names[0])
+    assert names[0] == ".hidden-but-mine"  # startup never deletes anything among the notes
+    assert len(names) == 2 and notes.is_note_id(names[1])
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read every file")
+def test_unreadable_loose_file_does_not_break_startup_or_lists(app_factory, data_root):
+    unreadable = data_root / "Private.md"
+    unreadable.write_text("only copy")
+    unreadable.chmod(0)
+    (data_root / "Readable.md").write_text("imported")
+    try:
+        with TestClient(app_factory(), headers=CSRF) as client:
+            login(client)
+            for endpoint in ["/api/notes", "/api/search", "/api/tags"]:
+                assert client.get(endpoint).status_code == 200
+            assert [n["title"] for n in client.get("/api/notes").json()] == ["Readable"]
+    finally:
+        unreadable.chmod(0o600)
+    assert unreadable.read_text() == "only copy"
 
 
 def test_history_is_not_exposed_by_api_or_search(client, data_root):

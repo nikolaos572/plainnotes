@@ -1,5 +1,6 @@
 """Note IDs, titles, and the notes service working directly on a data folder."""
 
+import errno
 import logging
 import os
 import shutil
@@ -9,10 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from app import notes
+from app import fsutil, notes, storage
 from app.fsutil import DataDir
 
 ID = "20261018-143205-k3f9"
+
+
+def restart(data_dir: DataDir) -> None:
+    """What starting plainnotes again does to the data folder."""
+    assert storage.prepare(data_dir.root.parent).read_only_reason == ""
 
 
 @pytest.mark.parametrize(
@@ -280,25 +286,20 @@ def test_delete_twice_in_same_second(data_dir: DataDir) -> None:
     assert second.startswith("20261019-101501_")
 
 
-def test_cleanup_temp_files(data_dir: DataDir, make_note: Callable) -> None:
-    root = data_dir.root
-    path = make_note("Keep", "x", note_id=ID)
-    (root / ".plainnotes-tmp-abc").mkdir()
-    (root / ".plainnotes-tmp-abc" / "Half.md").write_text("half")
-    (root / ".plainnotes-tmp-file").write_text("x")
-    (path.parent / ".plainnotes-tmp-123").write_text("x")
-    attachments = path.parent / "attachments"
-    attachments.mkdir()
-    (attachments / ".plainnotes-tmp-up").write_text("partial upload")
-    (attachments / "real.txt").write_text("keep")
-    other = root / "unrelated"
-    other.mkdir()
-    (other / ".plainnotes-tmp-x").write_text("not ours to touch")
-    notes.cleanup_temp_files(data_dir)
-    assert sorted(p.name for p in root.iterdir()) == [".plainnotes-tmp-abc", ID, "unrelated"]
-    assert sorted(p.name for p in path.parent.iterdir()) == ["Keep.md", "attachments"]
-    assert [p.name for p in attachments.iterdir()] == ["real.txt"]
-    assert (other / ".plainnotes-tmp-x").exists()
+def test_interrupted_create_is_kept_and_never_deleted(data_dir, monkeypatch):
+    def crash(*_args):
+        raise KeyboardInterrupt  # the file is complete but not yet moved into place
+
+    monkeypatch.setattr(notes, "new_id", crash)
+    monkeypatch.setattr(notes.shutil, "rmtree", lambda *_a, **_k: None)  # as if the process died
+    with pytest.raises(KeyboardInterrupt):
+        notes.create_note(data_dir, "Half done", "complete content")
+    monkeypatch.undo()
+    restart(data_dir)
+    [leftover] = data_dir.root.rglob("Half done.md")
+    assert leftover.read_bytes() == b"complete content"  # still on disk after the restart
+    assert leftover.parent.name.startswith(".")  # hidden, and not shown as a note
+    assert notes.list_notes(data_dir) == []
 
 
 def test_import_loose_file(data_dir: DataDir) -> None:
@@ -357,7 +358,7 @@ def test_paths_never_leave_data_folder(data_dir: DataDir, tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("after_move", [False, True])
-def test_interrupted_import_survives_cleanup(data_dir, monkeypatch, after_move):
+def test_interrupted_import_survives_restart(data_dir, monkeypatch, after_move):
     original = data_dir.root / "Original.md"
     original.write_bytes(b"only copy")
     rename = Path.rename
@@ -372,21 +373,76 @@ def test_interrupted_import_survives_cleanup(data_dir, monkeypatch, after_move):
     monkeypatch.setattr(Path, "rename", interrupt)
     with pytest.raises(KeyboardInterrupt):
         notes.import_loose_files(data_dir)
-    notes.cleanup_temp_files(data_dir)
+    monkeypatch.undo()
+    restart(data_dir)
     copies = list(data_dir.root.rglob("Original.md"))
     assert len(copies) == 1
     assert copies[0].read_bytes() == b"only copy"
-    monkeypatch.undo()
     notes.import_loose_files(data_dir)
     assert [ref.path.read_bytes() for ref in notes.list_notes(data_dir)] == [b"only copy"]
 
 
-def test_legacy_import_staging_is_not_deleted(data_dir):
-    staging = data_dir.root / ".plainnotes-tmp-legacy"
-    staging.mkdir()
-    (staging / "Original.md").write_bytes(b"only copy")
-    notes.cleanup_temp_files(data_dir)
-    assert (staging / "Original.md").read_bytes() == b"only copy"
+def test_unreadable_loose_file_stays_and_others_are_imported(data_dir, monkeypatch, caplog):
+    root = data_dir.root
+    (root / "A readable.md").write_bytes(b"first")
+    unreadable = root / "B unreadable.md"
+    unreadable.write_bytes(b"only copy")
+    (root / "C readable.md").write_bytes(b"third")
+    fsync_file = fsutil.fsync_file
+
+    def refuse(path):
+        if path == unreadable:
+            raise PermissionError(13, "Permission denied")
+        fsync_file(path)
+
+    monkeypatch.setattr(fsutil, "fsync_file", refuse)
+    with caplog.at_level(logging.WARNING):
+        notes.import_loose_files(data_dir)
+        notes.import_loose_files(data_dir)
+    assert sorted(r.title for r in notes.list_notes(data_dir)) == ["A readable", "C readable"]
+    assert unreadable.read_bytes() == b"only copy"
+    assert sum("B unreadable.md" in r.getMessage() for r in caplog.records) == 1
+    assert sorted(p.name for p in root.iterdir() if not notes.is_note_id(p.name)) == [
+        "B unreadable.md"
+    ]
+
+
+@pytest.mark.parametrize("failure", ["mkdir", "root sync", "folder sync"])
+def test_import_failure_never_stops_the_others(data_dir, monkeypatch, failure):
+    root = data_dir.root
+    (root / "First.md").write_bytes(b"first")
+    (root / "Second.md").write_bytes(b"second")
+    mkdir, fsync_dir = Path.mkdir, fsutil.fsync_dir
+    failed = []
+
+    def failing_mkdir(path, *args, **kwargs):
+        if failure == "mkdir" and not failed:
+            failed.append(path)
+            raise OSError(errno.EIO, "injected")
+        return mkdir(path, *args, **kwargs)
+
+    def failing_sync(path):
+        target = root if failure == "root sync" else None
+        if not failed and (path == target or (failure == "folder sync" and path != root)):
+            failed.append(path)
+            raise OSError(errno.EIO, "injected")
+        fsync_dir(path)
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+    monkeypatch.setattr(fsutil, "fsync_dir", failing_sync)
+    notes.import_loose_files(data_dir)
+    monkeypatch.undo()
+    imported = {r.title: r.path.read_bytes() for r in notes.list_notes(data_dir)}
+    loose = sorted(p.name for p in root.iterdir() if not notes.is_note_id(p.name))
+    # The failed file is either imported completely or still loose; nothing is lost or doubled.
+    if failure == "folder sync":
+        assert imported == {"First": b"first", "Second": b"second"}
+        assert loose == []
+    else:
+        assert imported == {"Second": b"second"}
+        assert loose == ["First.md"]
+        assert (root / "First.md").read_bytes() == b"first"
+    assert all(any(folder.iterdir()) for folder in root.iterdir() if folder.is_dir())
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -419,7 +475,8 @@ def test_external_replace_at_commit_is_preserved(data_dir, monkeypatch):
     assert note.ref.path.read_bytes() == b"browser version"
     versions = list((note.ref.folder / ".history").rglob("*.md"))
     assert [p.read_bytes() for p in versions] == [b"external editor version"]
-    notes.cleanup_temp_files(data_dir)
+    monkeypatch.undo()
+    restart(data_dir)
     assert versions[0].read_bytes() == b"external editor version"
 
 
@@ -438,7 +495,8 @@ def test_interrupted_history_save_retains_both_versions(data_dir, monkeypatch, a
     monkeypatch.setattr(fsutil, "exchange_files", interrupt)
     with pytest.raises(KeyboardInterrupt):
         notes.update_note(data_dir, note.ref.id, "Crash", "proposed", note.revision)
-    notes.cleanup_temp_files(data_dir)
+    monkeypatch.undo()
+    restart(data_dir)
     assert {p.read_bytes() for p in note.ref.folder.rglob("*.md")} == {b"original", b"proposed"}
 
 

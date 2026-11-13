@@ -25,8 +25,9 @@ CSRF = {"X-Requested-With": "plainnotes"}
 
 @pytest.fixture
 def data_root(tmp_path: Path) -> Path:
-    root = tmp_path / "data"
-    root.mkdir()
+    """The notes folder, inside the configured data folder (its parent), as in production."""
+    root = tmp_path / "data" / "notes"
+    root.mkdir(parents=True)
     return root
 
 
@@ -64,12 +65,12 @@ def no_login_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth, "FAILED_LOGIN_DELAY", 0)
 
 
-def make_settings(data_root: Path, **overrides: object) -> Settings:
+def make_settings(data_folder: Path, **overrides: object) -> Settings:
     values: dict[str, object] = {
         "username": USERNAME,
         "password": PASSWORD,
         "secret_key": SECRET_KEY,
-        "data_dir": data_root,
+        "data_dir": data_folder,
         "cookie_secure": False,
     }
     values.update(overrides)
@@ -79,7 +80,7 @@ def make_settings(data_root: Path, **overrides: object) -> Settings:
 @pytest.fixture
 def app_factory(data_root: Path) -> Callable[..., FastAPI]:
     def factory(**overrides: object) -> FastAPI:
-        return create_app(make_settings(data_root, **overrides))
+        return create_app(make_settings(data_root.parent, **overrides))
 
     return factory
 

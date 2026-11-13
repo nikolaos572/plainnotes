@@ -51,4 +51,8 @@ def logout(request: Request) -> Response:
 def session(request: Request) -> SessionInfo:
     """The logged-in user and whether the server is read-only."""
     settings = request.app.state.settings
-    return SessionInfo(username=settings.username, read_only=settings.read_only)
+    return SessionInfo(
+        username=settings.username,
+        read_only=settings.read_only,
+        read_only_reason=settings.read_only_reason,
+    )

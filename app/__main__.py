@@ -4,11 +4,12 @@ import logging
 import os
 import sys
 import time
+from dataclasses import replace
 
 import uvicorn
 
-from app import __version__
-from app.config import ConfigError, check_data_dir, config_warnings, load_settings
+from app import __version__, storage
+from app.config import ConfigError, config_warnings, load_settings
 from app.main import create_app
 
 logger = logging.getLogger("app")
@@ -32,13 +33,16 @@ def main() -> None:
     configure_logging("INFO")
     try:
         settings = load_settings(os.environ)
-        check_data_dir(settings.data_dir, read_only=settings.read_only)
+        prepared = storage.prepare(settings.data_dir, read_only=settings.read_only)
     except ConfigError as exc:
         logger.error("%s", exc)
         sys.exit(1)
     configure_logging(settings.log_level)
-    for warning in config_warnings(settings):
+    for warning in [*config_warnings(settings), *prepared.warnings]:
         logger.warning("%s", warning)
+    if prepared.read_only_reason:
+        logger.error("%s", prepared.read_only_reason)
+        settings = replace(settings, read_only=True, read_only_reason=prepared.read_only_reason)
     logger.info(
         "plainnotes %s: data folder %s, listening on %s:%d, base path %r, read-only %s",
         __version__,

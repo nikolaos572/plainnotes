@@ -1,12 +1,9 @@
 """Parse and validate the PLAINNOTES_* environment variables into an immutable Settings object."""
 
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from app import fsutil
 
 _BOOL_VALUES = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -37,6 +34,8 @@ class Settings:
     log_level: str = "INFO"
     read_only: bool = False
     base_path: str = ""
+    # Set at startup, not from the environment, when the storage check turns saving off.
+    read_only_reason: str = ""
 
 
 def load_settings(env: Mapping[str, str]) -> Settings:
@@ -88,31 +87,6 @@ def config_warnings(settings: Settings) -> list[str]:
             "choose a longer password."
         )
     return warnings
-
-
-def check_data_dir(path: Path, *, read_only: bool = False) -> None:
-    """Raise ConfigError unless path is an existing directory this process can write to."""
-    if not path.is_dir():
-        raise ConfigError(f"PLAINNOTES_DATA_DIR: {path} does not exist or is not a directory.")
-    if read_only:
-        try:
-            with os.scandir(path) as entries:
-                next(entries, None)
-            if not os.access(path, os.R_OK | os.X_OK):
-                raise PermissionError
-        except OSError:
-            raise ConfigError(f"PLAINNOTES_DATA_DIR: {path} is not readable.") from None
-        return
-    try:
-        fd, probe = fsutil.create_temp_file(path)
-        os.close(fd)
-        probe.unlink()
-    except OSError:
-        uid, gid = os.getuid(), os.getgid()
-        raise ConfigError(
-            f"Data directory {path} is not writable by uid {uid}. "
-            f"Fix it on the host with: sudo chown -R {uid}:{gid} <your data folder>"
-        ) from None
 
 
 def _integer(value: str | None, name: str, default: int, low: int, high: int | None) -> int:

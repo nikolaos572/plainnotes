@@ -16,11 +16,13 @@ A self-hosted, single-user web app for writing and finding notes that are stored
 
 ```
 data/
-├── 20261018-143205-k3f9/          one folder per note; the name is the note's ID
-│   ├── Docker commands.md         the note; the file name is the title
-│   └── attachments/
-│       └── compose.yml
-└── .trash/                        deleted notes, until you delete them for good
+├── notes/
+│   ├── 20261018-143205-k3f9/      one folder per note; the name is the note's ID
+│   │   ├── Docker commands.md     the note; the file name is the title
+│   │   └── attachments/
+│   │       └── compose.yml
+│   └── .trash/                    deleted notes, until you delete them for good
+└── testing/                       used only by the storage check at startup
 ```
 
 ## Quick start
@@ -29,7 +31,8 @@ Build the image and start it for a local test:
 
 ```bash
 docker build -t plainnotes .
-mkdir -p data   # create it yourself, so it is owned by your user and not by root
+mkdir -p data
+sudo chown 61001:61001 data   # the user the container runs as
 docker run -d --name plainnotes \
   -e PLAINNOTES_USERNAME=admin \
   -e PLAINNOTES_PASSWORD='choose-a-long-password' \
@@ -42,7 +45,9 @@ docker run -d --name plainnotes \
 
 Open <http://localhost:8080/> and log in. Generate the secret key with `openssl rand -hex 32` and keep it the same between restarts: changing it logs out every device. `PLAINNOTES_COOKIE_SECURE=false` lets the browser log in over plain HTTP; use it only for a local test like this one.
 
-The container runs as UID:GID 1000:1000. If your user on the host has a different ID (check with `id -u`), add `--user "$(id -u):$(id -g)"`. If the data folder is not writable, `docker logs plainnotes` shows the `chown` command that fixes it.
+The container runs as UID:GID 61001:61001, not root. That number is above the range Linux gives to real accounts (up to 60000), so it matches no login on the host: if anything ever escaped the container, it would land as an ID that owns nothing there, instead of an account such as uid 1000, which often has passwordless sudo. No user with that number needs to exist on the host; just give the data folder to it before the first start, as above. If the data folder is not writable, `docker logs plainnotes` shows the `chown` command that fixes it. The files plainnotes writes belong to 61001 too, so your own account can read the notes but needs `sudo` to change them; see [Your data](docs/guide.md#your-data).
+
+At every start plainnotes creates `notes/` and `testing/` in the data folder if they are missing, empties `testing/`, and checks there that the storage supports the atomic file operations safe saving needs. Local Linux filesystems such as ext4, XFS, btrfs and ZFS (OpenZFS 2.2 or later) do. If the storage does not (as with NFS or SMB shares, or ZFS 2.1 and older), plainnotes still starts, but read-only, and shows why on every page. It does the same when the disk is full or read-only at startup. Mount the whole data folder at once, so that the check runs on the same storage as your notes.
 
 ## Running behind HTTPS
 
@@ -50,6 +55,7 @@ For use beyond a local test, put plainnotes behind a reverse proxy that provides
 
 ```bash
 mkdir -p data
+sudo chown 61001:61001 data
 docker run -d --name plainnotes \
   --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
@@ -90,7 +96,7 @@ Everything is configured with environment variables. An invalid value stops the 
 | `PLAINNOTES_USERNAME` | required | Login name (case-sensitive) |
 | `PLAINNOTES_PASSWORD` | required | Login password; a warning is logged if it is shorter than 12 characters |
 | `PLAINNOTES_SECRET_KEY` | required | At least 32 characters; signs session cookies |
-| `PLAINNOTES_DATA_DIR` | `/data` | Folder with the notes; must exist and be writable unless read-only mode is enabled |
+| `PLAINNOTES_DATA_DIR` | `/data` | Data folder; must exist and be writable (by UID 61001 in Docker) unless read-only mode is enabled. plainnotes keeps the notes in its `notes/` folder and uses `testing/` for the storage check |
 | `PLAINNOTES_HOST` | `0.0.0.0` | Listen address |
 | `PLAINNOTES_PORT` | `8080` | Listen port (1–65535) |
 | `PLAINNOTES_SESSION_DAYS` | `30` | How long a login lasts (1–365); sessions are renewed while you use them |

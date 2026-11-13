@@ -125,12 +125,12 @@ def test_read_only_startup_and_gets_never_mutate_files(app_factory, data_root):
 
 def test_configured_symlink_root_supports_import_and_mutations(app_factory, tmp_path):
     actual = tmp_path / "actual"
-    actual.mkdir()
-    (actual / "Import.md").write_bytes(b"imported")
+    (actual / "notes").mkdir(parents=True)
+    (actual / "notes" / "Import.md").write_bytes(b"imported")
     link = tmp_path / "configured"
     link.symlink_to(actual, target_is_directory=True)
     app = app_factory(data_dir=link)
-    assert app.state.data_dir.root == actual.resolve()
+    assert app.state.data_dir.root == (actual / "notes").resolve()
     with TestClient(app, headers=CSRF) as client:
         login(client)
         assert [n["title"] for n in client.get("/api/notes").json()] == ["Import"]

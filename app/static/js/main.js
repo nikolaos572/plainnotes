@@ -206,10 +206,16 @@ const header = el(
   menu,
 );
 
+// Shown while the server has turned saving off, e.g. because the storage check failed.
+const storageNotice = el("p", { class: "storage-notice", role: "alert", hidden: true });
+
 function updateHeader() {
   const readOnly = app.session?.read_only === true;
   newNoteLink.hidden = readOnly;
   trashLink.hidden = readOnly;
+  const reason = app.session?.read_only_reason ?? "";
+  storageNotice.textContent = reason;
+  storageNotice.hidden = header.hidden || reason === "";
   const theme = readTheme();
   for (const button of themeButtons) {
     button.setAttribute("aria-pressed", String(button.dataset.themeValue === theme));
@@ -236,6 +242,7 @@ async function show(hash) {
   menu.open = false;
   const [view, params] = resolve(hash);
   header.hidden = view === loginView;
+  updateHeader();
   document.title = "plainnotes";
   let instance;
   try {
@@ -323,7 +330,7 @@ window.addEventListener("plainnotes:logout", () => {
 });
 
 async function boot() {
-  root.append(header, main);
+  root.append(header, storageNotice, main);
   updateHeader();
   window.addEventListener("hashchange", onHashChange);
   document.addEventListener("keydown", onKeydown);

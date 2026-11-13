@@ -1,11 +1,13 @@
 """Security headers, error format, crash handling and disabled docs endpoints."""
 
+import errno
 import logging
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import search, web
+from app import fsutil, search, web
 
 APP_CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; "
@@ -90,6 +92,34 @@ def test_unexpected_errors_are_generic(
     assert_security_headers(response)
     assert "secret detail /data/path" in caplog.text
     assert "Traceback" in caplog.text
+
+
+@pytest.mark.parametrize("code", [errno.ENOSPC, errno.EDQUOT])
+def test_full_disk_anywhere_is_reported_as_full(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    # Creating a folder needs a free block too; on a full ext4 disk mkdir fails like this.
+    def no_space(*_args: object, **_kwargs: object) -> None:
+        raise OSError(code, os.strerror(code), "/data/notes/.plainnotes-tmp-x")
+
+    monkeypatch.setattr(fsutil, "create_temp_dir", no_space)
+    response = client.post("/api/notes", json={"title": "Full", "content": ""})
+    assert response.status_code == 507
+    assert response.json() == {"code": "storage_full", "detail": "The disk is full."}
+    assert_security_headers(response)
+
+
+def test_other_file_errors_stay_generic(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "Input/output error", "/data/notes/secret")
+
+    monkeypatch.setattr(fsutil, "create_temp_dir", broken)
+    response = client.post("/api/notes", json={"title": "Broken", "content": ""})
+    assert response.status_code == 500
+    assert response.json()["code"] == "internal"
+    assert "secret" not in response.text
 
 
 def test_validation_errors_do_not_echo_input(client: TestClient) -> None:

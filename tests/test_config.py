@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.config import ConfigError, Settings, check_data_dir, config_warnings, load_settings
+from app.config import ConfigError, Settings, config_warnings, load_settings
 
 BASE = {
     "PLAINNOTES_USERNAME": "admin",
@@ -138,33 +138,6 @@ def test_repr_hides_secrets() -> None:
     assert "k" * 40 not in text
 
 
-def test_data_dir_checks(tmp_path: Path) -> None:
-    check_data_dir(tmp_path)
-    assert list(tmp_path.iterdir()) == []
-    with pytest.raises(ConfigError, match="does not exist"):
-        check_data_dir(tmp_path / "missing")
-    file = tmp_path / "file"
-    file.write_text("x")
-    with pytest.raises(ConfigError, match="not a directory"):
-        check_data_dir(file)
-
-
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can write anywhere")
-def test_data_dir_not_writable_message(tmp_path: Path) -> None:
-    locked = tmp_path / "locked"
-    locked.mkdir(mode=0o500)
-    try:
-        with pytest.raises(ConfigError) as info:
-            check_data_dir(locked)
-    finally:
-        locked.chmod(0o700)
-    uid, gid = os.getuid(), os.getgid()
-    assert str(info.value) == (
-        f"Data directory {locked} is not writable by uid {uid}. "
-        f"Fix it on the host with: sudo chown -R {uid}:{gid} <your data folder>"
-    )
-
-
 def test_main_exits_with_code_1_on_invalid_config(tmp_path: Path) -> None:
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -223,17 +196,6 @@ def test_healthcheck_against_a_live_server(live_server, monkeypatch: pytest.Monk
     assert healthcheck.main() == 1
     monkeypatch.setenv("PLAINNOTES_PORT", "1")
     assert healthcheck.main() == 1
-
-
-def test_read_only_data_dir_never_probes_writability(tmp_path, monkeypatch):
-    from app import fsutil
-
-    def no_writes(*_args):
-        raise AssertionError("write probe in read-only mode")
-
-    monkeypatch.setattr(fsutil, "create_temp_file", no_writes)
-    check_data_dir(tmp_path, read_only=True)
-    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@
 
 import errno
 import os
+import threading
 import tracemalloc
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -11,7 +12,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import attachments, fsutil, notes
+from app import attachments, fsutil, notes, storage
 from tests.conftest import CSRF, PASSWORD, USERNAME, login
 
 SANDBOX_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
@@ -468,7 +469,7 @@ def test_intentional_empty_upload_is_preserved(client, note_id, data_root):
     response = upload(client, note_id, "empty.txt", b"")
     assert response.status_code == 201
     assert response.json()["size"] == 0
-    notes.cleanup_temp_files(client.app.state.data_dir)
+    storage.prepare(data_root.parent)  # a restart
     assert (folder(data_root, note_id) / "empty.txt").read_bytes() == b""
 
 
@@ -503,13 +504,17 @@ transfer.finish(data, "upload.bin")
         check=False,
     )
     assert result.returncode == 77
-    notes.cleanup_temp_files(data_dir)
+    storage.prepare(data_dir.root.parent)  # a restart deletes nothing among the notes
     assert note.ref.path.read_bytes() == b"unchanged"
     assert (directory / "keep.txt").read_bytes() == b"keep"
+    shown = [item.name for item in attachments.list_attachments(data_dir, note.ref.id)]
+    hidden = [p for p in directory.iterdir() if p.name.startswith(fsutil.TEMP_PREFIX)]
     if stage == "before":
-        assert sorted(p.name for p in directory.iterdir()) == ["keep.txt"]
+        assert shown == ["keep.txt"]
+        assert [p.read_bytes() for p in hidden] == [b"complete upload"]  # kept, never shown
     else:
-        assert sorted(p.name for p in directory.iterdir()) == ["keep.txt", "upload.bin"]
+        assert shown == ["keep.txt", "upload.bin"]
+        assert hidden == []
         assert (directory / "upload.bin").read_bytes() == b"complete upload"
 
 
@@ -530,6 +535,30 @@ def test_failed_file_sync_never_publishes_attachment(
     response = upload(client, note_id, "failed.txt", b"complete body")
     assert response.status_code == (507 if error == errno.ENOSPC else 500)
     assert list(folder(data_root, note_id).iterdir()) == []
+
+
+def test_note_deleted_while_an_upload_starts_is_not_found(data_dir, monkeypatch):
+    note = notes.create_note(data_dir, "Deleted while uploading", "content")
+    look_up = attachments._folder
+    deleters = []
+
+    def then_delete(ref, create=False):
+        folder = look_up(ref, create)
+        # Another request moves the note to the trash right after its folder was looked up.
+        deleter = threading.Thread(target=notes.delete_note, args=(data_dir, ref.id))
+        deleter.start()
+        deleter.join(timeout=0.5)
+        deleters.append(deleter)
+        return folder
+
+    monkeypatch.setattr(attachments, "_folder", then_delete)
+    transfer = attachments.Upload(data_dir, note.ref.id)  # used to fail: FileNotFoundError
+    deleters[0].join(timeout=10)
+    assert not deleters[0].is_alive()
+    transfer.write(b"late")
+    with pytest.raises(notes.NotFound):
+        transfer.finish(data_dir, "late.txt")
+    transfer.discard()
 
 
 def test_simultaneous_uploads_keep_both_contents(data_dir):

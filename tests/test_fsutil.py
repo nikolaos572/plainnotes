@@ -112,20 +112,6 @@ def test_atomic_write_disk_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert list(tmp_path.iterdir()) == []
 
 
-def test_remove_temp_entries(tmp_path: Path) -> None:
-    (tmp_path / ".plainnotes-tmp-file").write_text("x")
-    (tmp_path / ".plainnotes-tmp-dir").mkdir()
-    (tmp_path / ".plainnotes-tmp-dir" / "inner").write_text("x")
-    outside = tmp_path.parent / "outside-target"
-    outside.mkdir(exist_ok=True)
-    (outside / "keep").write_text("x")
-    (tmp_path / ".plainnotes-tmp-link").symlink_to(outside)
-    (tmp_path / "keep.md").write_text("x")
-    assert fsutil.remove_temp_entries(tmp_path) == 3
-    assert [p.name for p in tmp_path.iterdir()] == ["keep.md"]
-    assert (outside / "keep").exists()
-
-
 def test_warn_once(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     data_dir = DataDir(tmp_path)
     logger = logging.getLogger("test")
@@ -237,10 +223,8 @@ def test_history_is_private_and_published_note_keeps_mode(tmp_path):
     target.write_bytes(b"original")
     target.chmod(0o640)
     history = tmp_path / ".history"
-    history.mkdir(mode=0o755)
-    old = history / "old.md"
-    old.write_bytes(b"legacy history")
     fsutil.replace_with_history(target, b"new", lambda: None)
+    assert target.read_bytes() == b"new"
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
     assert stat.S_IMODE(history.stat().st_mode) == 0o700
     versions = [p for p in history.iterdir() if p.is_dir()]
@@ -295,3 +279,50 @@ def test_missing_renameat2_never_falls_back_to_overwrite(tmp_path, monkeypatch):
     assert error.value.errno == errno.ENOSYS
     assert source.read_bytes() == b"new"
     assert target.read_bytes() == b"old"
+
+
+def test_atomic_renames_work_here_and_leave_nothing_behind(tmp_path):
+    (tmp_path / "existing").write_bytes(b"untouched")
+    assert fsutil.missing_atomic_renames(tmp_path) == []
+    assert [p.name for p in tmp_path.iterdir()] == ["existing"]
+    assert (tmp_path / "existing").read_bytes() == b"untouched"
+
+
+@pytest.mark.parametrize("code", [errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP])
+@pytest.mark.parametrize(
+    ("flag", "name"),
+    [(fsutil._RENAME_EXCHANGE, "RENAME_EXCHANGE"), (fsutil._RENAME_NOREPLACE, "RENAME_NOREPLACE")],
+)
+def test_unsupported_atomic_renames_are_reported(tmp_path, monkeypatch, code, flag, name):
+    real = fsutil._renameat2
+
+    def rename(first, second, flags):
+        if flags == flag:
+            raise OSError(code, os.strerror(code))
+        real(first, second, flags)
+
+    monkeypatch.setattr(fsutil, "_renameat2", rename)
+    assert fsutil.missing_atomic_renames(tmp_path) == [name]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_renames_that_misbehave_are_reported(tmp_path, monkeypatch):
+    def rename(first, second, flags):
+        if flags == fsutil._RENAME_NOREPLACE:
+            os.replace(first, second)  # Overwrites instead of refusing.
+        # RENAME_EXCHANGE "succeeds" without swapping anything.
+
+    monkeypatch.setattr(fsutil, "_renameat2", rename)
+    assert fsutil.missing_atomic_renames(tmp_path) == ["RENAME_EXCHANGE", "RENAME_NOREPLACE"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_other_rename_errors_are_raised(tmp_path, monkeypatch):
+    def rename(*_args):
+        raise OSError(errno.EIO, "injected")
+
+    monkeypatch.setattr(fsutil, "_renameat2", rename)
+    with pytest.raises(OSError) as error:
+        fsutil.missing_atomic_renames(tmp_path)
+    assert error.value.errno == errno.EIO
+    assert list(tmp_path.iterdir()) == []

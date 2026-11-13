@@ -37,9 +37,9 @@ Out of scope: an attacker who already has shell access to the host or write acce
 | Clickjacking | `frame-ancestors 'none'` and `X-Frame-Options: DENY` on every response | `tests/test_security.py::test_headers_on_every_response_type` |
 | Denial of service | 32 MiB body limit counted on the bytes received (uploads have their own optional limit and stream to disk with constant memory); 10 MiB note limit; queries ≤ 500 characters and 20 terms; linear-time regexes (possessive/atomic tag patterns, no backtracking constructs); bounded rate-limiter memory | `tests/test_api_notes.py::test_body_limit`, `test_content_too_large`, `tests/test_attachments.py` (50 MB streamed upload with bounded memory, limits), `tests/test_text.py::test_tag_regex_is_fast_on_pathological_input`, `tests/test_search.py::test_parse_limits` |
 | Information leaks | `/docs`, `/redoc` and `/openapi.json` disabled; FastAPI's built-in OpenTelemetry is switched off; generic `500` bodies (traceback only in the server log); validation errors report field names, never values; no paths or tracebacks in responses; no passwords, cookies, note content or search queries in logs (access log off); `Cache-Control: no-store` on the API; `Referrer-Policy: no-referrer` | `tests/test_web.py` (docs 404, generic 500, validation errors), `tests/test_security.py::test_no_secrets_in_logs`, `tests/test_api_search.py::test_search_terms_are_not_logged` |
-| Data loss | Atomic writes and directory syncing; content updates atomically exchange files and retain the displaced inode in .history; crash-safe direct import; title/content revision checks; trash with undo; independent IndexedDB drafts with visible storage errors. The app lock does not coordinate external editors | `tests/test_fsutil.py` (failure before `os.replace` keeps the original), `tests/test_api_notes.py::test_revision_conflict`, `tests/test_trash.py`, browser conflict and draft tests |
+| Data loss | Startup storage check (read-only on storage without atomic renames); atomic writes and directory syncing; content updates atomically exchange files and retain the displaced inode in .history; crash-safe direct import; title/content revision checks; trash with undo; independent IndexedDB drafts with visible storage errors. The app lock does not coordinate external editors | `tests/test_storage.py`, `tests/test_fsutil.py` (failure before `os.replace` keeps the original), `tests/test_api_notes.py::test_revision_conflict`, `tests/test_trash.py`, browser conflict and draft tests |
 | Supply chain | Two direct Python dependencies (`fastapi`, `uvicorn`), every runtime package pinned with `--hash`; the Docker base image pinned by digest; two vendored JavaScript files, unmodified, with SHA-256 recorded under [Third-party code](#third-party-code) and checked by a test; no CDN, no web fonts, no outbound connections | `pip install --require-hashes` in the Dockerfile; `tests/test_frontend.py::test_vendored_files_are_unchanged` |
-| Container | Runs as UID:GID 1000:1000; nothing installed beyond the Python packages; no `VOLUME`; works with `--read-only --cap-drop ALL --security-opt no-new-privileges` and needs no tmpfs; healthcheck in Python without curl | `tests/test_docker.py` |
+| Container | Runs as UID:GID 61001:61001, above the range Linux gives to real accounts (up to 60000), so it matches no account on the host (such as uid 1000, which often has passwordless sudo) if anything escapes the container; nothing installed beyond the Python packages; no `VOLUME`; works with `--read-only --cap-drop ALL --security-opt no-new-privileges` and needs no tmpfs; healthcheck in Python without curl | `tests/test_docker.py` |
 
 Security headers on every response (`web.py`): `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; media-src 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` (replaced by the sandbox policy on attachments), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`, and no `Server` header. HSTS is set by the reverse proxy.
 
@@ -66,7 +66,7 @@ Everything below is automated and part of the test suite (run locally or with th
 4. **Code review.** Searching the frontend for `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `Function(`, string-based timers and inline `on*=` attributes gives no hits; `tests/test_frontend.py` keeps it that way. HTML is parsed from note content only inside DOMPurify. `index.html` has no inline scripts, styles or handlers.
 5. **Headers.** Checked for HTML, static files, `304` revalidation, API JSON, API errors, inline and downloaded attachments, health, `404` and the base-path redirect (`tests/test_security.py::test_headers_on_every_response_type`).
 6. **Dependencies.** `pip-audit -r requirements.txt --require-hashes` (pip-audit 2.10.1, run with a throwaway virtualenv): no known vulnerabilities. Vendored JavaScript checked against the GitHub Advisory Database: markdown-it 14.3.3 is not affected by any published advisory (the most recent, GHSA-253c-mchw-3w2r about quadratic linkify paths, was fixed in 14.3.1); DOMPurify 3.4.17 is not affected by any published advisory (all were fixed in 3.4.16 or earlier, and most concern the `IN_PLACE`, `SAFE_FOR_TEMPLATES`, `CUSTOM_ELEMENT_HANDLING` and hook features, which plainnotes does not use). Before vendoring, both tarballs were checked against the registry's integrity hashes and diffed against the previous patch release.
-7. **Container.** The image runs as UID 1000 (checked with `docker exec … id -u` and by the owner of files written to the host folder) and works with `--read-only --cap-drop ALL --security-opt no-new-privileges` without a tmpfs (`tests/test_docker.py`).
+7. **Container.** The image runs as UID:GID 61001:61001 (checked with `docker exec … id` and by the owner of files written to the host folder, prepared with `chown 61001:61001` as the README says) and works with `--read-only --cap-drop ALL --security-opt no-new-privileges` without a tmpfs (`tests/test_docker.py`).
 
 ### Findings and fixes
 
@@ -108,12 +108,19 @@ Previous content is retained under each note's hidden .history directory and is 
 exposed by any API route. It moves with the note to trash and is removed by permanent
 trash deletion. It is not automatically pruned; account for its disk usage in backups. Recovery
 directories are owner-only, and proposed files are private from creation, including
-failed-write artifacts. Existing recovery directories are restricted on the next content save.
+failed-write artifacts.
 
-Content replacement uses Linux renameat2 with RENAME_EXCHANGE; unsupported filesystems
-fail safely. This preserves the file displaced at commit time, including a concurrent
-external version, but cannot prevent an external program from subsequently changing or
-deleting files. Do not run multiple app instances against the same data directory.
+Content replacement uses Linux renameat2 with RENAME_EXCHANGE. This preserves the file
+displaced at commit time, including a concurrent external version, but cannot prevent an
+external program from subsequently changing or deleting files. Do not run multiple app
+instances against the same data directory.
+
+Nothing in `notes/` is ever deleted automatically. A hidden temp file left by an
+interrupted save or upload stays where it is and is never shown. A storage check at every
+start tries RENAME_EXCHANGE and RENAME_NOREPLACE on new files in the data folder's `testing/`
+folder, which is used for nothing else and is emptied first; it never touches the notes. If
+either operation is missing, or the disk is full or read-only at startup, the server runs
+read-only and shows the reason on every page.
 
 Drafts are scoped by installation path and editor instance in IndexedDB. Logout asks
 before deleting recovery drafts; after server logout succeeds, it invalidates old editors
@@ -121,12 +128,8 @@ and purges drafts atomically. Cancelled and failed logouts retain recovery draft
 storage cannot be accessed, logout still ends the session and reports that local drafts
 could not be erased. Clear browser site data in that case.
 
-Read-only mode performs neither import nor cleanup and can use a read-only data mount.
+Read-only mode creates, imports and empties nothing and can use a read-only data mount.
 Loose files remain loose in that mode; they are not listed as imported notes.
-
-After upgrading, reload open browser tabs to use the new draft implementation. Existing
-localStorage drafts remain recoverable. Old content-only revision tokens produce a
-normal conflict; load the latest version or explicitly overwrite after reviewing it.
 
 Validation on the audit VM: 453 unit/API/source tests, 45 Chromium browser tests and
 5 Docker tests passed (503 total). Ruff lint and formatting checks passed. Separate

@@ -139,7 +139,11 @@ def install_error_handlers(app: FastAPI) -> None:
 
 
 class SecurityMiddleware:
-    """Adds the security and cache headers to every response and turns crashes into 500s."""
+    """Adds the security and cache headers to every response and turns crashes into 500s.
+
+    A full disk is not a crash: any file operation can report it (creating a folder, opening a
+    new file), not only those that raise StorageFull, so it always becomes a 507.
+    """
 
     def __init__(self, app: ASGIApp, api_prefix: str) -> None:
         self.app = app
@@ -160,7 +164,11 @@ class SecurityMiddleware:
 
         try:
             await self.app(scope, receive, send_with_headers)
-        except Exception:
+        except Exception as exc:
+            if not started and isinstance(exc, OSError) and exc.errno in fsutil.FULL_ERRNOS:
+                status, code, detail = SERVICE_ERRORS[fsutil.StorageFull]
+                await error_response(status, code, detail)(scope, receive, send_with_headers)
+                return
             logger.exception("Unhandled error while serving a request")
             if started:
                 raise

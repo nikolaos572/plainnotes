@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from app import notes, web
+from app import notes, storage, web
 from app.auth import Auth
 from app.config import Settings
 from app.fsutil import DataDir
@@ -59,11 +59,10 @@ class _StaticFiles(StaticFiles):
 
 def create_app(settings: Settings) -> FastAPI:
     """Build an independent app instance from settings."""
-    data_dir = DataDir(settings.data_dir, read_only=settings.read_only)
+    data_dir = DataDir(storage.notes_dir(settings.data_dir), read_only=settings.read_only)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        notes.cleanup_temp_files(data_dir)
         notes.import_loose_files(data_dir)
         yield
 
