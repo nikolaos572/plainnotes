@@ -164,7 +164,7 @@ def test_literal_dot_segments(live_server: Callable, data_root: Path, tmp_path: 
         assert b"secret" not in text and b"create_app" not in text
     connection.close()
     assert sorted(os.listdir(folder / "attachments")) == ["file", "real.txt"]
-    before["data/" + NOTE + "/attachments/file"] = body.encode()
+    before["data/notes/" + NOTE + "/attachments/file"] = body.encode()
     assert snapshot(tmp_path) == before
 
 

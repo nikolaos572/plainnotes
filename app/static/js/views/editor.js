@@ -251,7 +251,7 @@ export async function editorView({ id, query }, app) {
       for (const draft of candidates) {
         if (destroyed) return;
         if (draft.title === state.loadedTitle && draft.content === state.loadedValue
-            && (draft.rawContent ?? state.loadedContent) === state.loadedContent) {
+            && draft.rawContent === state.loadedContent) {
           await drafts.discardDraft(draft);
           continue;
         }
@@ -270,8 +270,7 @@ export async function editorView({ id, query }, app) {
         if (choice === "restore") {
           titleInput.value = draft.title;
           textarea.value = draft.content;
-          const raw = draft.rawContent ?? draft.content.replace(/\n/g, state.lineEnding);
-          rememberRaw(raw, textarea.value);
+          rememberRaw(draft.rawContent, textarea.value);
           state.revision = draft.base_revision ?? state.revision;
           restoredDraft = draft;
           refresh();
@@ -314,7 +313,7 @@ export async function editorView({ id, query }, app) {
       }
       await drafts.removeMatchingDrafts(saved.id, saved.title, sentValue, saved.content);
       if (restoredDraft?.content === sentValue && restoredDraft?.title === saved.title
-          && (restoredDraft.rawContent === undefined || restoredDraft.rawContent === saved.content)) {
+          && restoredDraft.rawContent === saved.content) {
         await drafts.discardDraft(restoredDraft);
         restoredDraft = null;
       }

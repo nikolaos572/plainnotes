@@ -32,10 +32,11 @@ class NoteUpdate(BaseModel):
 
 
 class SessionInfo(BaseModel):
-    """GET /api/session response."""
+    """GET /api/session response; read_only_reason explains a read-only mode the server chose."""
 
     username: str
     read_only: bool
+    read_only_reason: str = ""
 
 
 class Attachment(BaseModel):

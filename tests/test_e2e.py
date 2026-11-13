@@ -17,7 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, BrowserContext, Locator, Page, expect, sync_playwright
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Locator,
+    Page,
+    Route,
+    expect,
+    sync_playwright,
+)
 
 from tests.conftest import PASSWORD, SECRET_KEY, USERNAME, free_port
 
@@ -36,7 +44,7 @@ document.addEventListener("securitypolicyviolation", (e) => {
 @dataclass
 class Server:
     url: str
-    data: Path
+    data: Path  # the notes folder inside the configured data folder
 
 
 @contextmanager
@@ -70,7 +78,7 @@ def running_server(data: Path, log: Path, **settings: str) -> Iterator[Server]:
                     if process.poll() is not None or time.monotonic() > deadline:
                         raise RuntimeError(f"server did not start:\n{log.read_text()}") from None
                     time.sleep(0.1)
-            yield Server(url, data)
+            yield Server(url, data / "notes")
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -838,14 +846,13 @@ def test_draft_of_a_new_note_and_logout(context: BrowserContext, page: Page) -> 
     second.locator("dialog[open]").get_by_role("button", name="Restore").click()
     expect(second.get_by_label("Title")).to_have_value(title)
     expect(second.get_by_label("Note text")).to_have_value("typed before the crash")
-    second.evaluate("localStorage.setItem('plainnotes.draft.20260101-000000-zzzz', '{}')")
+    wait_for_draft(second, "new")
     second.get_by_text("Menu").click()
     second.get_by_role("button", name="Log out").click()
     second.locator("dialog[open]").get_by_role("button", name="Discard").click()
     second.locator("dialog[open]").get_by_role("button", name="Log out", exact=True).click()
     expect(second.get_by_label("Username")).to_be_visible()
-    keys = second.evaluate("Object.keys(localStorage)")
-    assert not [key for key in keys if key.startswith("plainnotes.draft.")]
+    wait_for_no_draft(second, "new")
     assert_clean(second, problems)
 
 
@@ -854,8 +861,8 @@ def test_draft_of_a_new_note_and_logout(context: BrowserContext, page: Page) -> 
 
 def test_read_only_ui(browser: Browser, tmp_path: Path) -> None:
     data = tmp_path / "data"
-    (data / "20260101-000000-read").mkdir(parents=True)
-    (data / "20260101-000000-read" / "Read me.md").write_text("# Hello")
+    (data / "notes" / "20260101-000000-read").mkdir(parents=True)
+    (data / "notes" / "20260101-000000-read" / "Read me.md").write_text("# Hello")
     with running_server(data, tmp_path / "server.log", read_only="true") as running:
         context = browser.new_context(base_url=running.url)
         page = context.new_page()
@@ -864,6 +871,7 @@ def test_read_only_ui(browser: Browser, tmp_path: Path) -> None:
         login_in_browser(page)
         expect(page.get_by_role("link", name="Read me")).to_be_visible()
         expect(page.get_by_role("banner").get_by_role("link", name="New note")).to_be_hidden()
+        expect(page.locator(".storage-notice")).to_be_hidden()  # read-only by choice
         page.get_by_text("Menu").click()
         expect(page.get_by_role("link", name="Trash")).to_be_hidden()
         page.goto("#/note/20260101-000000-read")
@@ -881,6 +889,25 @@ def test_read_only_ui(browser: Browser, tmp_path: Path) -> None:
         expect(page).to_have_url(running.url + "#/")
         assert_clean(page, problems)
         context.close()
+
+
+def test_storage_notice_explains_why_saving_is_off(page: Page) -> None:
+    reason = "Saving is turned off: the storage that holds your notes is not supported."
+
+    def session(route: Route) -> None:
+        route.fulfill(json={"username": USERNAME, "read_only": True, "read_only_reason": reason})
+
+    page.route("**/api/session", session)
+    page.goto("")
+    notice = page.locator(".storage-notice")
+    expect(notice).to_have_text(reason)
+    expect(notice).to_have_attribute("role", "alert")
+    expect(page.get_by_role("banner").get_by_role("link", name="New note")).to_be_hidden()
+    page.goto("#/tags")
+    expect(notice).to_be_visible()
+    page.goto("#/login")
+    expect(page.get_by_role("button", name="Log in")).to_be_visible()
+    expect(notice).to_be_hidden()
 
 
 def test_sub_path_hosting(browser: Browser, tmp_path: Path) -> None:
@@ -1076,24 +1103,6 @@ def test_orphaned_draft_can_be_saved_as_new(context, page):
     assert all_drafts(recovered, note["id"]) == []
     new_id = recovered.url.split("/note/")[1].split("/")[0]
     assert api(recovered, "GET", f"api/notes/{new_id}")["content"] == "recover this"
-
-
-def test_legacy_localstorage_draft_is_recovered(page):
-    note = create_note(page, unique("Legacy"), "original")
-    page.goto("#/")
-    page.evaluate(
-        """(note) => localStorage.setItem("plainnotes.draft." + note.id, JSON.stringify({
-        title: note.title, content: "legacy unsaved", base_revision: note.revision,
-        saved_at: "2026-01-01T00:00:00Z"
-    }))""",
-        note,
-    )
-    page.goto(f"#/note/{note['id']}/edit")
-    page.locator("dialog[open]").get_by_role("button", name="Restore", exact=True).click()
-    expect(page.get_by_label("Note text")).to_have_value("legacy unsaved")
-    page.keyboard.press("Control+s")
-    expect(page.locator(".dirty-dot")).to_be_hidden()
-    wait_for_no_draft(page, note["id"])
 
 
 def test_logout_epoch_blocks_stale_writes(context, page):

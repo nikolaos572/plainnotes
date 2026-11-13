@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import attachments, fsutil, notes
+from app import attachments, fsutil, notes, storage
 from tests.conftest import CSRF, PASSWORD, USERNAME, login
 
 SANDBOX_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
@@ -468,7 +468,7 @@ def test_intentional_empty_upload_is_preserved(client, note_id, data_root):
     response = upload(client, note_id, "empty.txt", b"")
     assert response.status_code == 201
     assert response.json()["size"] == 0
-    notes.cleanup_temp_files(client.app.state.data_dir)
+    storage.prepare(data_root.parent)  # a restart
     assert (folder(data_root, note_id) / "empty.txt").read_bytes() == b""
 
 
@@ -503,13 +503,17 @@ transfer.finish(data, "upload.bin")
         check=False,
     )
     assert result.returncode == 77
-    notes.cleanup_temp_files(data_dir)
+    storage.prepare(data_dir.root.parent)  # a restart deletes nothing among the notes
     assert note.ref.path.read_bytes() == b"unchanged"
     assert (directory / "keep.txt").read_bytes() == b"keep"
+    shown = [item.name for item in attachments.list_attachments(data_dir, note.ref.id)]
+    hidden = [p for p in directory.iterdir() if p.name.startswith(fsutil.TEMP_PREFIX)]
     if stage == "before":
-        assert sorted(p.name for p in directory.iterdir()) == ["keep.txt"]
+        assert shown == ["keep.txt"]
+        assert [p.read_bytes() for p in hidden] == [b"complete upload"]  # kept, never shown
     else:
-        assert sorted(p.name for p in directory.iterdir()) == ["keep.txt", "upload.bin"]
+        assert shown == ["keep.txt", "upload.bin"]
+        assert hidden == []
         assert (directory / "upload.bin").read_bytes() == b"complete upload"
 
 

@@ -340,27 +340,6 @@ def delete_note(data_dir: DataDir, note_id: str, now: datetime | None = None) ->
     return trash_id
 
 
-def cleanup_temp_files(data_dir: DataDir) -> None:
-    """Startup cleanup: remove leftover temp entries at the top level and inside note folders."""
-    if data_dir.read_only:
-        return
-    # Older releases moved original imports into these directories. Never delete them.
-    removed = fsutil.remove_temp_entries(data_dir.root, preserve_dirs=True)
-    with os.scandir(data_dir.root) as entries:
-        folders = [
-            Path(entry.path)
-            for entry in entries
-            if is_note_id(entry.name) and entry.is_dir(follow_symlinks=False)
-        ]
-    for folder in folders:
-        removed += fsutil.remove_temp_entries(folder)
-        attachments = folder / ATTACHMENTS_DIR
-        if fsutil.is_real_dir(attachments):
-            removed += fsutil.remove_temp_entries(attachments)
-    if removed:
-        logger.info("Removed %d leftover temporary files", removed)
-
-
 def mtime_moment(mtime: float) -> datetime:
     """A file timestamp as a UTC datetime; now if the timestamp is out of range."""
     try:
@@ -386,7 +365,12 @@ def import_loose_files(data_dir: DataDir) -> None:
     with data_dir.lock:
         taken = {title_key(ref.title) for ref in list_notes(data_dir)}
         for name in sorted(names):
-            _import_one(data_dir, name, taken)
+            try:
+                _import_one(data_dir, name, taken)
+            except (OSError, fsutil.StorageFull) as exc:
+                # One file that cannot be imported must not stop startup or every list request.
+                reason = exc.strerror if isinstance(exc, OSError) else "the disk is full"
+                data_dir.warn_once(logger, "Could not import %r: %s", name, reason)
 
 
 def _import_one(data_dir: DataDir, name: str, taken: set[str]) -> None:
@@ -404,9 +388,13 @@ def _import_one(data_dir: DataDir, name: str, taken: set[str]) -> None:
         return
     if not fsutil.is_real_file(source):
         return
-    fsutil.fsync_file(source)
-    # A crash leaves the original loose file or a complete note, never the only
-    # copy inside a staging directory that startup cleanup deletes.
+    try:
+        fsutil.fsync_file(source)
+    except OSError:
+        # The file stays where it is; unreadable content would not open as a note anyway.
+        data_dir.warn_once(logger, "Not importing %r: the file cannot be read", name)
+        return
+    # A crash leaves the original loose file or a complete note, never a partial copy.
     while True:
         note_id = new_id(mtime_moment(mtime), _id_taken(data_dir))
         folder = data_dir.root / note_id
@@ -415,14 +403,15 @@ def _import_one(data_dir: DataDir, name: str, taken: set[str]) -> None:
             break
         except FileExistsError:
             continue
-    fsutil.fsync_dir(data_dir.root)
     try:
+        fsutil.fsync_dir(data_dir.root)
         source.rename(folder / name)
-    except OSError:
+    except (OSError, fsutil.StorageFull):
         folder.rmdir()
         data_dir.warn_once(logger, "Could not import %r", name)
         return
+    # From here on the note exists, so its title is taken even if a sync below fails.
+    taken.add(title_key(title))
     fsutil.fsync_dir(folder)
     fsutil.fsync_dir(data_dir.root)
-    taken.add(title_key(title))
     logger.info("Imported %r as note %s", name, note_id)

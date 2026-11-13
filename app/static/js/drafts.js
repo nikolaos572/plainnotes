@@ -4,7 +4,6 @@
  */
 const SCOPE = location.pathname;
 const EPOCH_KEY = JSON.stringify([SCOPE, "epoch"]);
-const LEGACY_PREFIX = "plainnotes.draft.";
 let database = null;
 let sessionSerial = 0;
 const channel = typeof BroadcastChannel === "function"
@@ -62,17 +61,6 @@ function keyFor(noteId, owner) {
   return JSON.stringify([SCOPE, noteId, owner.id]);
 }
 
-function legacyDraft(noteId) {
-  try {
-    const key = LEGACY_PREFIX + (noteId ?? "new");
-    const draft = JSON.parse(localStorage.getItem(key) ?? "null");
-    if (typeof draft?.title !== "string" || typeof draft.content !== "string") return null;
-    return { ...draft, key, legacy: true };
-  } catch {
-    return null;
-  }
-}
-
 /** Start a distinct editor, including when a browser duplicates a tab. */
 export async function beginEditor() {
   const serial = sessionSerial;
@@ -85,7 +73,7 @@ export async function beginEditor() {
   return { id, epoch, serial };
 }
 
-/** List all recovery candidates; old localStorage drafts remain readable during upgrade. */
+/** List all recovery candidates for a note (null: new notes), newest first. */
 export async function loadDrafts(noteId) {
   const records = await transaction("readonly", (store, done) => {
     const request = store.getAll();
@@ -93,8 +81,6 @@ export async function loadDrafts(noteId) {
       (item) => item.scope === SCOPE && item.kind === "draft" && item.noteId === noteId,
     )));
   });
-  const legacy = legacyDraft(noteId);
-  if (legacy) records.push(legacy);
   return records.sort((a, b) => (b.saved_at ?? "").localeCompare(a.saved_at ?? ""));
 }
 
@@ -124,14 +110,6 @@ export async function removeDraft(noteId, owner) {
 
 /** Discard a candidate only if another editor has not updated it since it was shown. */
 export async function discardDraft(draft) {
-  if (draft.legacy) {
-    const current = localStorage.getItem(draft.key);
-    const parsed = current ? JSON.parse(current) : null;
-    if (parsed?.content === draft.content && parsed?.saved_at === draft.saved_at) {
-      localStorage.removeItem(draft.key);
-    }
-    return;
-  }
   await transaction("readwrite", (store) => {
     const request = store.get(draft.key);
     onSuccess(request, () => {
@@ -146,8 +124,7 @@ export async function discardDraft(draft) {
 export async function removeMatchingDrafts(noteId, title, content, rawContent) {
   const records = await loadDrafts(noteId);
   for (const record of records) {
-    if (record.title === title && record.content === content
-        && (record.rawContent === undefined || record.rawContent === rawContent)) {
+    if (record.title === title && record.content === content && record.rawContent === rawContent) {
       await discardDraft(record);
     }
   }
@@ -167,9 +144,5 @@ export async function removeAllDrafts() {
       });
     });
   });
-  // Legacy drafts predate path namespaces.
-  for (const key of Object.keys(localStorage)) {
-    if (key.startsWith(LEGACY_PREFIX)) localStorage.removeItem(key);
-  }
   notifyLogout();
 }

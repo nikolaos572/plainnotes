@@ -205,7 +205,11 @@ def test_login_success_and_session(anon: TestClient) -> None:
     assert "SameSite=Strict" in cookie
     assert "Path=/;" in cookie
     assert f"Max-Age={30 * 86400}" in cookie
-    assert anon.get("/api/session").json() == {"username": USERNAME, "read_only": False}
+    assert anon.get("/api/session").json() == {
+        "username": USERNAME,
+        "read_only": False,
+        "read_only_reason": "",
+    }
 
 
 def test_secure_cookie_by_default(app_factory: Callable[..., FastAPI]) -> None:

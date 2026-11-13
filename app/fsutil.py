@@ -8,7 +8,6 @@ import errno
 import logging
 import os
 import secrets
-import shutil
 import stat
 import threading
 from collections.abc import Callable
@@ -24,6 +23,8 @@ _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
 _FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
+# What renameat2 reports when the filesystem (or libc) lacks a flag.
+_UNSUPPORTED_ERRNOS = frozenset({errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP})
 
 
 class InvalidName(ValueError):
@@ -36,7 +37,7 @@ class StorageFull(Exception):
 
 @dataclass
 class DataDir:
-    """The data folder plus the per-app lock and the set of warnings already logged."""
+    """The notes folder plus the per-app lock and the set of warnings already logged."""
 
     root: Path
     read_only: bool = False
@@ -169,7 +170,11 @@ def fsync_file(path: Path) -> None:
 
 
 def atomic_write(target: Path, data: bytes, *, mode: int = 0o666) -> None:
-    """Replace target with data so that a crash leaves either the old or the new file."""
+    """Replace target with data so that a crash leaves either the old or the new file.
+
+    The new content goes to a hidden temp file next to target first. If the process dies
+    before the rename, that file stays behind; nothing ever deletes it automatically.
+    """
     fd, temp = create_temp_file(target.parent, mode=mode)
     try:
         with os.fdopen(fd, "wb") as file:
@@ -186,30 +191,6 @@ def atomic_write(target: Path, data: bytes, *, mode: int = 0o666) -> None:
             raise_if_full(exc)
         raise
     fsync_dir(target.parent)
-
-
-def remove_temp_entries(folder: Path, *, preserve_dirs: bool = False) -> int:
-    """Delete leftover temp files and folders directly inside folder; return how many."""
-    removed = 0
-    try:
-        entries = list(os.scandir(folder))
-    except OSError:
-        return 0
-    for entry in entries:
-        if not entry.name.startswith(TEMP_PREFIX):
-            continue
-        try:
-            if entry.is_dir(follow_symlinks=False):
-                if preserve_dirs:
-                    os.rmdir(entry.path)  # Only empty legacy staging directories are disposable.
-                else:
-                    shutil.rmtree(entry.path)
-            else:
-                os.unlink(entry.path)
-            removed += 1
-        except OSError:
-            continue
-    return removed
 
 
 def _renameat2(first: Path, second: Path, flags: int) -> None:
@@ -242,18 +223,62 @@ def rename_no_replace(source: Path, target: Path) -> None:
     _renameat2(source, target, _RENAME_NOREPLACE)
 
 
+def missing_atomic_renames(folder: Path) -> list[str]:
+    """Try the atomic renames that saves rely on; return the names of unsupported ones.
+
+    Only files this function creates exclusively in folder are used, and only they are removed,
+    each by its exact name. Errors other than "not supported" are raised.
+    """
+    created: list[Path] = []
+
+    def new_file(data: bytes) -> Path:
+        fd, path = create_temp_file(folder, mode=0o600)
+        created.append(path)
+        with os.fdopen(fd, "wb") as file:
+            file.write(data)
+        return path
+
+    missing = []
+    try:
+        first, second = new_file(b"first"), new_file(b"second")
+        try:
+            exchange_files(first, second)
+        except OSError as exc:
+            if exc.errno not in _UNSUPPORTED_ERRNOS:
+                raise
+            missing.append("RENAME_EXCHANGE")
+        else:
+            if read_file(first) != b"second" or read_file(second) != b"first":
+                missing.append("RENAME_EXCHANGE")
+        try:
+            rename_no_replace(first, second)
+        except FileExistsError:
+            # The existing file was protected, as it must be. Now publish to a free name.
+            target = folder / _temp_name()
+            rename_no_replace(first, target)
+            created.append(target)
+        except OSError as exc:
+            if exc.errno not in _UNSUPPORTED_ERRNOS:
+                raise
+            missing.append("RENAME_NOREPLACE")
+        else:
+            missing.append("RENAME_NOREPLACE")  # It replaced an existing file.
+    finally:
+        for path in created:
+            path.unlink(missing_ok=True)
+    return missing
+
+
 def replace_with_history(target: Path, data: bytes, check_current: Callable[[], None]) -> None:
     """Publish data while retaining the exact displaced inode in .history.
 
     Both sides exist before exchange, so an interruption leaves both versions recoverable.
-    Failed attempts may leave a proposed version in history; cleanup must never remove it.
+    Failed attempts may leave a proposed version in history.
     """
     history = target.parent / ".history"
     history.mkdir(mode=0o700, exist_ok=True)
     if not is_real_dir(history):
         raise OSError(errno.EINVAL, "History is not a real directory")
-    # Also protect recovery artifacts retained by earlier releases.
-    history.chmod(0o700)
     fsync_dir(target.parent)
     version = history / secrets.token_hex(16)
     version.mkdir(mode=0o700)

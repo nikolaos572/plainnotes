@@ -352,6 +352,20 @@ select {
 
 /* Pages */
 
+.storage-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--danger);
+  background: var(--bg-raised);
+  color: var(--danger);
+  font-weight: 600;
+  text-align: center;
+}
+
+.storage-notice[hidden] {
+  display: none;
+}
+
 .main {
   flex: 1;
   display: flex;
@@ -778,6 +792,7 @@ mark {
   }
 
   .app-header,
+  .storage-notice,
   .toolbar,
   .list-controls,
   .copy-code,

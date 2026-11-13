@@ -115,9 +115,12 @@ def test_container(image: str, data_folder: Path, containers: list[str]) -> None
     assert docker("exec", container, "id", "-u") == "1000"
     assert docker("exec", container, "id", "-g") == "1000"
     note = create_note_over_http(container, "Made in Docker")
-    path = data_folder / note["id"] / "Made in Docker.md"
+    path = data_folder / "notes" / note["id"] / "Made in Docker.md"
     assert path.read_text() == "from the test\n"
     assert path.stat().st_uid == 1000
+    testing = data_folder / "testing"
+    assert testing.stat().st_uid == 1000
+    assert list(testing.iterdir()) == []  # the storage check cleaned up after itself
 
 
 def test_container_hardened(image: str, data_folder: Path, containers: list[str]) -> None:
@@ -125,7 +128,7 @@ def test_container_hardened(image: str, data_folder: Path, containers: list[str]
     containers.append(container)
     wait_healthy(container)
     note = create_note_over_http(container, "Read-only root")
-    assert (data_folder / note["id"] / "Read-only root.md").stat().st_uid == 1000
+    assert (data_folder / "notes" / note["id"] / "Read-only root.md").stat().st_uid == 1000
 
 
 def test_image_is_small_and_unprivileged(image: str) -> None:
@@ -169,6 +172,9 @@ def test_unwritable_data_folder_exits_with_a_message(image: str, tmp_path: Path)
 
 
 def test_hardened_container_updates_and_reads_a_readonly_mount(image, data_folder, containers):
+    for name in ["notes", "testing"]:
+        (data_folder / name).mkdir()
+        (data_folder / name).chmod(0o777)  # the CI runner's user writes into them below
     container = start(image, data_folder, *HARDENED)
     containers.append(container)
     wait_healthy(container)
@@ -191,16 +197,19 @@ def test_hardened_container_updates_and_reads_a_readonly_mount(image, data_folde
         assert first.json()["name"] == "same.txt"
         assert second.json()["name"] == "same (1).txt"
         assert client.get(attachment_url).content == b"first complete upload"
-        assert (data_folder / note["id"] / "attachments" / "same (1).txt").read_bytes() == (
+        notes = data_folder / "notes"
+        assert (notes / note["id"] / "attachments" / "same (1).txt").read_bytes() == (
             b"second complete upload"
         )
-    history = data_folder / note["id"] / ".history"
+    history = data_folder / "notes" / note["id"] / ".history"
     assert [path.read_text() for path in history.rglob("*.md")] == ["from the test\n"]
     docker("stop", container)
-    loose = data_folder / "Do not import.md"
+    loose = data_folder / "notes" / "Do not import.md"
     loose.write_text("untouched")
-    staged = data_folder / ".plainnotes-tmp-do-not-clean"
+    staged = data_folder / "notes" / ".plainnotes-tmp-do-not-clean"
     staged.write_text("untouched")
+    check_leftover = data_folder / "testing" / "left by a killed check"
+    check_leftover.write_text("untouched")
     reader = docker(
         "run",
         "-d",
@@ -237,4 +246,4 @@ def test_hardened_container_updates_and_reads_a_readonly_mount(image, data_folde
             assert client.get(route).status_code == 200
         assert client.get(f"/api/notes/{note['id']}").json()["content"] == "updated under hardening"
         assert client.delete(f"/api/notes/{note['id']}").status_code == 403
-    assert loose.read_text() == staged.read_text() == "untouched"
+    assert loose.read_text() == staged.read_text() == check_leftover.read_text() == "untouched"
