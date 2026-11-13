@@ -2,6 +2,7 @@
 
 import errno
 import os
+import threading
 import tracemalloc
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -534,6 +535,30 @@ def test_failed_file_sync_never_publishes_attachment(
     response = upload(client, note_id, "failed.txt", b"complete body")
     assert response.status_code == (507 if error == errno.ENOSPC else 500)
     assert list(folder(data_root, note_id).iterdir()) == []
+
+
+def test_note_deleted_while_an_upload_starts_is_not_found(data_dir, monkeypatch):
+    note = notes.create_note(data_dir, "Deleted while uploading", "content")
+    look_up = attachments._folder
+    deleters = []
+
+    def then_delete(ref, create=False):
+        folder = look_up(ref, create)
+        # Another request moves the note to the trash right after its folder was looked up.
+        deleter = threading.Thread(target=notes.delete_note, args=(data_dir, ref.id))
+        deleter.start()
+        deleter.join(timeout=0.5)
+        deleters.append(deleter)
+        return folder
+
+    monkeypatch.setattr(attachments, "_folder", then_delete)
+    transfer = attachments.Upload(data_dir, note.ref.id)  # used to fail: FileNotFoundError
+    deleters[0].join(timeout=10)
+    assert not deleters[0].is_alive()
+    transfer.write(b"late")
+    with pytest.raises(notes.NotFound):
+        transfer.finish(data_dir, "late.txt")
+    transfer.discard()
 
 
 def test_simultaneous_uploads_keep_both_contents(data_dir):
