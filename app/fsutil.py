@@ -22,7 +22,7 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
-_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
+FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 # What renameat2 reports when the filesystem (or libc) lacks a flag.
 _UNSUPPORTED_ERRNOS = frozenset({errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP})
 
@@ -114,7 +114,7 @@ def read_file(path: Path) -> bytes:
 
 def raise_if_full(exc: OSError) -> None:
     """Turn a disk-full OSError into StorageFull; return for any other error."""
-    if exc.errno in _FULL_ERRNOS:
+    if exc.errno in FULL_ERRNOS:
         raise StorageFull from exc
 
 
