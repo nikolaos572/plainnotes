@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Response
 
 from app import models, notes, text, trash
+from app.models import TrashEmpty
 from app.routes import PROTECTED, WRITABLE, DataDirDep
 
 router = APIRouter(dependencies=PROTECTED)
@@ -30,7 +31,7 @@ def delete_permanently(trash_id: str, data_dir: DataDirDep) -> Response:
 
 
 @router.delete("/trash", status_code=204, dependencies=WRITABLE)
-def empty_trash(data_dir: DataDirDep) -> Response:
-    """Delete everything in the trash."""
-    trash.empty(data_dir)
+def empty_trash(body: TrashEmpty, data_dir: DataDirDep) -> Response:
+    """Delete the listed trash entries; notes trashed since the list was shown are kept."""
+    trash.empty(data_dir, body.trash_ids)
     return Response(status_code=204)

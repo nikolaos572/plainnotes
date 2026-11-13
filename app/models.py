@@ -31,6 +31,12 @@ class NoteUpdate(BaseModel):
     base_revision: str
 
 
+class TrashEmpty(BaseModel):
+    """DELETE /api/trash body: the trash entries the user was shown."""
+
+    trash_ids: list[str]
+
+
 class SessionInfo(BaseModel):
     """GET /api/session response; read_only_reason explains a read-only mode the server chose."""
 

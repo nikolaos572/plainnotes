@@ -17,8 +17,8 @@ export function isDialogOpen() {
  * @param {Object} options
  * @param {string} options.title
  * @param {string} [options.message]
- * @param {{label: string, value: *, kind?: string, icon?: string}[]} options.buttons the first is
- *   focused; icon names an icon from icons.js
+ * @param {{label: string, value: *, kind?: string, icon?: string, focus?: boolean}[]} options.buttons
+ *   the one marked focus (otherwise the first) is focused; icon names an icon from icons.js
  * @param {*} [options.cancelValue] result when the dialog is dismissed with Esc
  * @returns {Promise<*>} the value of the chosen button
  */
@@ -59,7 +59,7 @@ export function showDialog({ title, message, buttons, cancelValue = null }) {
     });
     document.body.append(dialog);
     dialog.showModal();
-    actions[0]?.focus();
+    (actions[buttons.findIndex((button) => button.focus)] ?? actions[0])?.focus();
   });
 }
 
@@ -77,7 +77,8 @@ export async function confirmAction(title, message, button) {
     message,
     buttons: [
       { kind: "primary", ...button, value: true },
-      { label: "Cancel", value: false, icon: "x" },
+      // A destructive answer is never the default, so a held or repeated Enter cannot confirm it.
+      { label: "Cancel", value: false, icon: "x", focus: button.kind === "danger" },
     ],
     cancelValue: false,
   });

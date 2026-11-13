@@ -15,6 +15,10 @@ def trash_ids(client: TestClient) -> list[str]:
     return [entry["trash_id"] for entry in client.get("/api/trash").json()]
 
 
+def empty_trash(client: TestClient, ids: list[str]) -> int:
+    return client.request("DELETE", "/api/trash", json={"trash_ids": ids}).status_code
+
+
 def test_delete_and_list(client: TestClient) -> None:
     note = create(client, "Old note", "#tag")
     assert client.get("/api/trash").json() == []
@@ -103,11 +107,47 @@ def test_empty_trash(client: TestClient, data_root: Path) -> None:
     for title in ["One", "Two", "Three"]:
         client.delete(f"/api/notes/{create(client, title)['id']}")
     (data_root / ".trash" / "keep-me.txt").write_text("not a trash entry")
-    assert len(trash_ids(client)) == 3
-    assert client.delete("/api/trash").status_code == 204
+    shown = trash_ids(client)
+    assert len(shown) == 3
+    assert empty_trash(client, shown) == 204
     assert trash_ids(client) == []
     assert sorted(p.name for p in (data_root / ".trash").iterdir()) == ["keep-me.txt"]
-    assert client.delete("/api/trash").status_code == 204
+    assert empty_trash(client, shown) == 204  # already gone: nothing to do
+    assert empty_trash(client, []) == 204
+
+
+def test_emptying_keeps_notes_trashed_after_the_list_was_shown(client: TestClient) -> None:
+    client.delete(f"/api/notes/{create(client, 'Old junk')['id']}")
+    shown = trash_ids(client)
+    # Meanwhile, in another tab, a note is moved to the trash; the confirm dialog never listed it.
+    later = create(client, "Deleted by mistake", "only copy")
+    client.delete(f"/api/notes/{later['id']}")
+    assert empty_trash(client, shown) == 204
+    [entry] = client.get("/api/trash").json()
+    assert entry["id"] == later["id"]
+    restored = client.post(f"/api/trash/{entry['trash_id']}/restore")
+    assert restored.status_code == 200
+    assert client.get(f"/api/notes/{later['id']}").json()["content"] == "only copy"
+
+
+def test_emptying_needs_the_list_of_entries(client: TestClient) -> None:
+    client.delete(f"/api/notes/{create(client, 'Stays')['id']}")
+    assert client.delete("/api/trash").status_code == 422
+    assert client.request("DELETE", "/api/trash", json={}).status_code == 422
+    assert len(trash_ids(client)) == 1
+
+
+def test_emptying_ignores_ids_that_are_not_trash_entries(
+    client: TestClient, data_root: Path
+) -> None:
+    note = create(client, "Live note", "keep")
+    client.delete(f"/api/notes/{create(client, 'Trashed')['id']}")
+    (data_root / ".trash" / "keep-me.txt").write_text("not a trash entry")
+    bad = [note["id"], "..", "../" + note["id"], ".trash", "keep-me.txt", "", "x/../.."]
+    assert empty_trash(client, bad) == 204
+    assert client.get(f"/api/notes/{note['id']}").json()["content"] == "keep"
+    assert len(trash_ids(client)) == 1
+    assert (data_root / ".trash" / "keep-me.txt").exists()
 
 
 def test_symlinks_in_trash_are_not_followed(
@@ -123,7 +163,7 @@ def test_symlinks_in_trash_are_not_followed(
     assert trash_ids(client) == []
     assert client.delete(f"/api/trash/{link_id}").status_code == 404
     assert client.post(f"/api/trash/{link_id}/restore").status_code == 404
-    assert client.delete("/api/trash").status_code == 204
+    assert empty_trash(client, [link_id]) == 204
     assert (outside / "Precious.md").read_text() == "keep"
 
 
@@ -137,7 +177,7 @@ def test_symlinked_trash_folder(
     (entry / "Note.md").write_text("x")
     (data_root / ".trash").symlink_to(outside)
     assert client.get("/api/trash").json() == []
-    assert client.delete("/api/trash").status_code == 204
+    assert empty_trash(client, [entry.name]) == 204
     assert (entry / "Note.md").exists()
     make_note("Kept", "x", note_id="20260101-000000-kept")
     assert client.delete("/api/notes/20260101-000000-kept").status_code == 500

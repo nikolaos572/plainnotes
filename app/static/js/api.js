@@ -119,8 +119,9 @@ export const restoreTrash = (trashId) =>
   request("POST", `api/trash/${encodeURIComponent(trashId)}/restore`);
 /** Delete one trash entry permanently. */
 export const deleteTrash = (trashId) => request("DELETE", `api/trash/${encodeURIComponent(trashId)}`);
-/** Delete everything in the trash. */
-export const emptyTrash = () => request("DELETE", "api/trash");
+/** Delete the listed trash entries (the ones shown), not notes trashed since then. */
+export const emptyTrash = (trashIds) =>
+  request("DELETE", "api/trash", { json: { trash_ids: trashIds } });
 
 /**
  * Upload one file as the raw request body, reporting progress.

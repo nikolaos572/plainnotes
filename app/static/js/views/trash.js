@@ -47,12 +47,14 @@ export async function trashView(_params, app) {
     await render();
   }
 
-  async function empty(count) {
+  async function empty(entries) {
+    // Only the entries shown here: a note trashed meanwhile (in another tab) is not deleted.
+    const count = entries.length;
     const message = `${count} deleted note${count === 1 ? "" : "s"} will be deleted permanently.`;
     const button = { label: "Empty trash", kind: "danger", icon: "trash-2" };
     if (!(await confirmAction("Empty the trash?", message, button))) return;
     try {
-      await api.emptyTrash();
+      await api.emptyTrash(entries.map((entry) => entry.trash_id));
       toast("Trash emptied");
     } catch (error) {
       showError(error);
@@ -105,7 +107,7 @@ export async function trashView(_params, app) {
       entries.length && !readOnly
         ? el(
             "button",
-            { type: "button", class: "button danger", on: { click: () => empty(entries.length) } },
+            { type: "button", class: "button danger", on: { click: () => empty(entries) } },
             icon("trash-2"),
             "Empty trash",
           )

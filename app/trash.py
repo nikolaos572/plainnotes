@@ -2,6 +2,7 @@
 
 import re
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -117,10 +118,17 @@ def delete_permanently(data_dir: DataDir, trash_id: str) -> None:
         fsutil.fsync_dir(folder.parent)
 
 
-def empty(data_dir: DataDir) -> None:
-    """Delete every entry in the trash."""
+def empty(data_dir: DataDir, trash_ids: Iterable[str]) -> None:
+    """Delete the listed trash entries: the ones the user was shown and agreed to delete.
+
+    Notes moved to the trash after that list was loaded stay, and IDs that no longer exist
+    are skipped.
+    """
     with data_dir.lock:
-        for entry in list_trash(data_dir):
-            folder = _entry_folder(data_dir, entry.trash_id)
+        for trash_id in dict.fromkeys(trash_ids):
+            try:
+                folder = _entry_folder(data_dir, trash_id)
+            except notes.NotFound:
+                continue
             shutil.rmtree(folder)
             fsutil.fsync_dir(folder.parent)
