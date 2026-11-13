@@ -1102,6 +1102,8 @@ def test_orphaned_draft_can_be_saved_as_new(context, page):
     recovered.keyboard.press("Control+s")
     recovered.locator("dialog[open]").get_by_role("button", name="Save as new note").click()
     expect(recovered.locator(".dirty-dot")).to_be_hidden()
+    # "Saved" appears only after the drafts kept under the old ID are removed.
+    expect(recovered.locator(".toast").last).to_have_text("Saved")
     assert note["id"] not in recovered.url
     assert all_drafts(recovered, note["id"]) == []
     new_id = recovered.url.split("/note/")[1].split("/")[0]
