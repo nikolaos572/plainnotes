@@ -1,5 +1,9 @@
 """Attachments: file-name rules, listing, upload, serving and deletion."""
 
+import base64
+import binascii
+import hashlib
+import logging
 import os
 import re
 import stat
@@ -11,8 +15,13 @@ from pathlib import Path
 from app import fsutil, notes
 from app.fsutil import DataDir
 
+logger = logging.getLogger(__name__)
+
 _UNSAFE_CHARS_RE = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|\ud800-\udfff]')
 _SEPARATORS_RE = re.compile(r"[/\\]")
+# A Structured Field byte sequence (RFC 8941): base64 between colons.
+_BYTE_SEQUENCE_RE = re.compile(r":([A-Za-z0-9+/=]*):")
+SHA256_BYTES = 32
 
 
 # Shown in the browser with exactly this type; everything else is forced to download.
@@ -47,6 +56,41 @@ DOWNLOAD_TYPE = "application/octet-stream"
 
 class UploadTooLarge(Exception):
     """The upload exceeds PLAINNOTES_MAX_UPLOAD_MB."""
+
+
+class DigestRequired(Exception):
+    """PLAINNOTES_CHECK_ATTACHMENTS_HASH is on, but the upload carries no SHA-256."""
+
+
+class InvalidDigest(Exception):
+    """The upload's Content-Digest header has a sha-256 entry that is not a valid SHA-256."""
+
+
+class DigestMismatch(Exception):
+    """The bytes received do not have the SHA-256 the client sent; nothing was saved."""
+
+
+def expected_sha256(header: str) -> bytes:
+    """The SHA-256 in a Content-Digest header (RFC 9530), such as "sha-256=:<base64>:".
+
+    Other algorithms in the header are ignored. Raise DigestRequired if it has no sha-256
+    entry and InvalidDigest if that entry is not 32 bytes in base64.
+    """
+    for member in header.split(","):
+        key, _, value = member.strip().partition("=")
+        if key != "sha-256":
+            continue
+        match = _BYTE_SEQUENCE_RE.fullmatch(value.split(";", 1)[0])
+        if match is None:
+            raise InvalidDigest
+        try:
+            digest = base64.b64decode(match[1], validate=True)
+        except binascii.Error:
+            raise InvalidDigest from None
+        if len(digest) != SHA256_BYTES:
+            raise InvalidDigest
+        return digest
+    raise DigestRequired
 
 
 @dataclass(frozen=True)
@@ -176,9 +220,15 @@ def delete_attachment(data_dir: DataDir, note_id: str, name: str) -> None:
 
 
 class Upload:
-    """A temp file inside a note's attachments folder that receives an upload in chunks."""
+    """A temp file inside a note's attachments folder that receives an upload in chunks.
 
-    def __init__(self, data_dir: DataDir, note_id: str) -> None:
+    With expected_sha256, every chunk is also hashed, and finish() publishes the file only if
+    the received bytes have that SHA-256.
+    """
+
+    def __init__(
+        self, data_dir: DataDir, note_id: str, expected_sha256: bytes | None = None
+    ) -> None:
         self.note_id = note_id
         # Locked, so the note cannot move to the trash between the lookup and the create.
         with data_dir.lock:
@@ -186,6 +236,8 @@ class Upload:
             fd, self.temp = fsutil.create_temp_file(self.folder)
         self.file = os.fdopen(fd, "wb")
         self.size = 0
+        self.expected_sha256 = expected_sha256
+        self._hash = hashlib.sha256() if expected_sha256 is not None else None
 
     def write(self, chunk: bytes) -> None:
         """Append a chunk; disk-full errors become StorageFull."""
@@ -195,6 +247,8 @@ class Upload:
             fsutil.raise_if_full(exc)
             raise
         self.size += len(chunk)
+        if self._hash is not None:
+            self._hash.update(chunk)
 
     def discard(self) -> None:
         """Close and delete the temp file."""
@@ -207,7 +261,18 @@ class Upload:
             self.temp.unlink(missing_ok=True)
 
     def finish(self, data_dir: DataDir, requested_name: str) -> AttachmentInfo:
-        """Move the temp file to a free final name; never overwrites an existing file."""
+        """Move the temp file to a free final name; never overwrites an existing file.
+
+        Raise DigestMismatch, before anything is published, if the SHA-256 check fails; the
+        caller then discards the temp file.
+        """
+        if self._hash is not None and self._hash.digest() != self.expected_sha256:
+            logger.warning(
+                "Upload to note %s failed the SHA-256 check after %d bytes; it was not saved",
+                self.note_id,
+                self.size,
+            )
+            raise DigestMismatch
         try:
             self.file.flush()
             os.fsync(self.file.fileno())

@@ -40,7 +40,9 @@ def unsupported(flag: int, code: int = errno.EINVAL):
 
 def test_fresh_data_folder_gets_notes_and_testing(tmp_path):
     prepared = storage.prepare(tmp_path)
-    assert prepared == storage.Prepared()
+    passed = storage.CHECK_PASSED.format(folder=tmp_path / "testing")
+    assert prepared == storage.Prepared(info=[passed])
+    assert "RENAME_EXCHANGE" in passed and "RENAME_NOREPLACE" in passed
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notes", "testing"]
     assert list((tmp_path / "notes").iterdir()) == list((tmp_path / "testing").iterdir()) == []
 
@@ -132,7 +134,8 @@ def test_read_only_creates_empties_and_probes_nothing(tmp_path, monkeypatch):
     (tmp_path / "testing").mkdir()
     (tmp_path / "testing" / "leftover").write_bytes(b"kept")
     before = snapshot(tmp_path)
-    assert storage.prepare(tmp_path, read_only=True) == storage.Prepared()
+    skipped = storage.Prepared(info=[storage.CHECK_SKIPPED])
+    assert storage.prepare(tmp_path, read_only=True) == skipped
     assert snapshot(tmp_path) == before
 
 
@@ -266,6 +269,7 @@ def test_startup_on_unsupported_storage_serves_read_only(server_start, monkeypat
     reason = app.state.settings.read_only_reason
     assert reason.startswith("Saving is turned off") and "(RENAME_EXCHANGE)" in reason
     assert f"ERROR app: {reason}" in log
+    assert "Storage check passed" not in log
     (tmp_path / "notes" / "Loose.md").write_bytes(b"not imported in read-only mode")
     with TestClient(app, headers=CSRF) as client:
         login(client)
@@ -273,6 +277,7 @@ def test_startup_on_unsupported_storage_serves_read_only(server_start, monkeypat
             "username": USERNAME,
             "read_only": True,
             "read_only_reason": reason,
+            "check_attachments_hash": False,
         }
         assert client.get("/api/notes").json() == []
         created = client.post("/api/notes", json={"title": "Blocked", "content": ""})
@@ -285,9 +290,28 @@ def test_startup_on_supported_storage_allows_saving(server_start, tmp_path):
     app, log = server_start()
     assert app.state.settings.read_only is False
     assert "Saving is turned off" not in log
+    assert "read-only False, check attachments hash False\n" in log
+    passed = storage.CHECK_PASSED.format(folder=tmp_path / "testing")
+    assert f"INFO app: {passed}\n" in log
     with TestClient(app, headers=CSRF) as client:
         login(client)
         assert client.get("/api/session").json()["read_only_reason"] == ""
         created = client.post("/api/notes", json={"title": "Saved", "content": "x"})
         assert created.status_code == 201
     assert (tmp_path / "notes" / created.json()["id"] / "Saved.md").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize(
+    ("level", "message"),
+    [(logging.INFO, "Application startup complete."), (logging.ERROR, "Exception in ASGI app")],
+)
+def test_uvicorn_server_log_is_not_labelled_error(server_start, level, message):
+    server_start()
+    # The handler main() installed. Format a record directly: other tests run uvicorn with its
+    # own logging config, which stops "uvicorn.*" records from reaching the root logger.
+    handler = logging.getLogger().handlers[0]
+    record = logging.LogRecord("uvicorn.error", level, __file__, 1, message, (), None)
+    line = handler.format(record)
+    assert line.endswith(f" {logging.getLevelName(level)} uvicorn: {message}")
+    # Only the printed name changes: other handlers still see the real logger name.
+    assert record.name == "uvicorn.error"

@@ -1,5 +1,7 @@
 """Browser tests: the real app in a uvicorn subprocess, driven by Playwright and Chromium."""
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -635,6 +637,23 @@ def test_print_layout_shows_only_the_note(page: Page) -> None:
     expect(page.locator(".app-header")).to_be_visible()
 
 
+def test_upload_message_fits_a_phone_screen(page: Page) -> None:
+    # A name without spaces gives the message no place to wrap unless it may wrap anywhere.
+    name = "Screenshot_20261114_104533_com.android.chrome.jpg"
+    page.set_viewport_size({"width": 390, "height": 844})
+    note = create_note(page, unique("Long name"), "")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.locator("input[type=file]").set_input_files(
+        files=[{"name": name, "mimeType": "image/jpeg", "buffer": b"jpeg"}]
+    )
+    toast = page.locator(".toast")
+    expect(toast).to_have_text(f"Uploaded {name}")
+    box = toast.bounding_box()
+    assert box is not None
+    assert box["x"] >= 0
+    assert box["x"] + box["width"] <= 390
+
+
 def test_upload_image_and_see_it_in_markdown(page: Page, server: Server, tmp_path: Path) -> None:
     note = create_note(page, unique("Picture"), "Screenshot:\n")
     image = tmp_path / "screen shot (1).png"
@@ -656,6 +675,82 @@ def test_upload_image_and_see_it_in_markdown(page: Page, server: Server, tmp_pat
         "src", f"api/notes/{note['id']}/attachments/screen%20shot%20%281%29.png"
     )
     expect(image_element).to_have_js_property("naturalWidth", 24)
+
+
+# --- layout ---------------------------------------------------------------------------
+
+
+def box(locator: Locator) -> dict[str, float]:
+    found = locator.bounding_box()
+    assert found is not None, locator
+    return found
+
+
+def right(found: dict[str, float]) -> float:
+    return found["x"] + found["width"]
+
+
+def bottom(found: dict[str, float]) -> float:
+    return found["y"] + found["height"]
+
+
+def middle(found: dict[str, float]) -> float:
+    return found["y"] + found["height"] / 2
+
+
+@pytest.mark.parametrize("width", [1680, 1000, 390])
+def test_header_lines_up_with_the_page_column(page: Page, width: int) -> None:
+    create_note(page, unique("Column"), "")
+    page.set_viewport_size({"width": width, "height": 800})
+    page.goto("#/")
+    notes = box(page.locator(".note-list").first)
+    assert box(page.locator(".brand"))["x"] == pytest.approx(notes["x"], abs=1)
+    assert right(box(page.locator(".menu > summary"))) == pytest.approx(right(notes), abs=1)
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_editor_spacing_and_button_row(page: Page, width: int) -> None:
+    note = create_note(page, unique("Layout"), "text\n")
+    page.set_viewport_size({"width": width, "height": 844})
+    page.goto(f"#/note/{note['id']}/edit")
+    title = box(page.locator("#note-title"))
+    text = box(page.get_by_label("Note text"))
+    panel = box(page.locator(".attachments-panel"))
+    # A little room between the title row and the text, and between the text and the attachments.
+    assert text["y"] - bottom(box(page.locator(".editor-bar"))) == pytest.approx(16, abs=1)
+    assert panel["y"] - bottom(text) == pytest.approx(24, abs=1)
+    # Wrap lines, Save and Close: one row that ends at the right edge of the text.
+    row = [
+        box(page.locator(".editor-actions .check")),
+        box(page.get_by_role("button", name="Save", exact=True)),
+        box(page.get_by_role("button", name="Close", exact=True)),
+    ]
+    assert all(middle(found) == pytest.approx(middle(row[0]), abs=1) for found in row)
+    assert right(row[-1]) == pytest.approx(right(text), abs=1)
+    if width >= 720:
+        assert middle(row[0]) == pytest.approx(middle(title), abs=1)
+    else:
+        # Phones: a row of its own below the title, spread evenly across the full width.
+        assert row[0]["y"] > bottom(title)
+        assert row[0]["x"] == pytest.approx(title["x"], abs=1)
+        gaps = [row[1]["x"] - right(row[0]), row[2]["x"] - right(row[1])]
+        assert gaps[0] == pytest.approx(gaps[1], abs=1)
+
+
+def test_login_title_is_centred(context: BrowserContext) -> None:
+    page = context.new_page()
+    page.goto("#/login")
+    margins = page.locator(".login-form h1").evaluate(
+        """(heading) => {
+        const range = document.createRange();
+        range.selectNodeContents(heading);
+        const content = range.getBoundingClientRect();
+        const outer = heading.getBoundingClientRect();
+        return [content.left - outer.left, outer.right - content.right];
+    }"""
+    )
+    assert margins[0] > 0
+    assert margins[0] == pytest.approx(margins[1], abs=1)
 
 
 # --- button icons ---------------------------------------------------------------------
@@ -987,6 +1082,169 @@ def test_sub_path_hosting(browser: Browser, tmp_path: Path) -> None:
         assert requests[0] == running.url.removesuffix("/")
         assert all(url.startswith(running.url) for url in requests[1:]), requests
         assert {cookie["path"] for cookie in context.cookies()} == {"/notes/"}
+        assert_clean(page, problems)
+        context.close()
+
+
+# --- upload SHA-256 check (PLAINNOTES_CHECK_ATTACHMENTS_HASH) -------------------------
+
+SHA256_LENGTHS = [0, 1, 3, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 1000, 70_000]
+BIG_FILE_BYTES = 2 * 1024 * 1024 + 17  # three 1 MiB reads, the last one short
+# Makes the page a browser from before 2022, which cannot compute the SHA-256 of a file.
+OLD_BROWSER = "delete AbortSignal.prototype.throwIfAborted;"
+
+
+def pattern_bytes(length: int) -> bytes:
+    return bytes((index * 31 + 7) & 255 for index in range(length))
+
+
+def content_digest(body: bytes) -> str:
+    return f"sha-256=:{base64.b64encode(hashlib.sha256(body).digest()).decode()}:"
+
+
+def binary_file(name: str, body: bytes) -> dict[str, object]:
+    return {"name": name, "mimeType": "application/octet-stream", "buffer": body}
+
+
+def test_sha256_module_matches_hashlib(page: Page) -> None:
+    page.goto("")
+    result = page.evaluate(
+        """async ([lengths, bigLength]) => {
+        const url = new URL("static/js/sha256.js", document.baseURI).href;
+        const { Sha256, blobSha256 } = await import(url);
+        const pattern = (length) => Uint8Array.from({ length }, (_, i) => (i * 31 + 7) & 255);
+        const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+        const whole = lengths.map((length) => hex(new Sha256().update(pattern(length)).digest()));
+        // The same bytes fed in uneven pieces, so partial blocks must be joined correctly.
+        const pieces = lengths.map((length) => {
+          const bytes = pattern(length);
+          const hash = new Sha256();
+          for (let at = 0, step = 1; at < length; at += step, step = ((step * 7) % 97) + 1) {
+            hash.update(bytes.subarray(at, at + step));
+          }
+          return hex(hash.digest());
+        });
+        const reported = [];
+        const big = new Blob([pattern(bigLength)]);
+        const file = hex(await blobSha256(big, { onProgress: (share) => reported.push(share) }));
+        const finished = new Sha256();
+        finished.digest();
+        let reused = "";
+        try {
+          finished.update(new Uint8Array(1));
+        } catch (error) {
+          reused = error.message;
+        }
+        const stop = new AbortController();
+        stop.abort();
+        const aborted = await blobSha256(big, { signal: stop.signal }).catch((error) => error.name);
+        return { whole, pieces, file, reported, reused, aborted };
+    }""",
+        [SHA256_LENGTHS, BIG_FILE_BYTES],
+    )
+    expected = [hashlib.sha256(pattern_bytes(length)).hexdigest() for length in SHA256_LENGTHS]
+    assert result["whole"] == expected
+    assert result["pieces"] == expected
+    assert result["file"] == hashlib.sha256(pattern_bytes(BIG_FILE_BYTES)).hexdigest()
+    mib = 1024 * 1024
+    assert result["reported"] == [mib / BIG_FILE_BYTES, 2 * mib / BIG_FILE_BYTES, 1]
+    assert "finished" in result["reused"]
+    assert result["aborted"] == "AbortError"
+
+
+def test_upload_sends_no_hash_by_default(page: Page) -> None:
+    note = create_note(page, unique("Unchecked"), "")
+    sent: list[dict[str, str]] = []
+    page.on("request", lambda request: request.method == "PUT" and sent.append(request.headers))
+    page.goto(f"#/note/{note['id']}/edit")
+    page.locator("input[type=file]").set_input_files(
+        files=[{"name": "plain.txt", "mimeType": "text/plain", "buffer": b"plain"}]
+    )
+    expect(page.locator(".toast").filter(has_text="Uploaded plain.txt")).to_have_text(
+        "Uploaded plain.txt"
+    )
+    assert len(sent) == 1
+    assert "content-digest" not in sent[0]
+
+
+def test_old_browser_uploads_without_the_check(page: Page, server: Server) -> None:
+    page.add_init_script(OLD_BROWSER)
+    note = create_note(page, unique("Old browser"), "")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.locator("input[type=file]").set_input_files(files=[binary_file("old.bin", b"old")])
+    expect(page.locator(".toast")).to_have_text("Uploaded old.bin")
+    assert (server.data / note["id"] / "attachments" / "old.bin").read_bytes() == b"old"
+
+
+def test_checked_uploads_in_the_editor(browser: Browser, tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    with running_server(data, tmp_path / "server.log", check_attachments_hash="true") as running:
+        context = browser.new_context(base_url=running.url)
+        page = context.new_page()
+        problems = watched(page)
+        page.goto("")
+        login_in_browser(page)
+        note = create_note(page, "Checked uploads", "")
+        attachments = running.data / note["id"] / "attachments"
+        sent: list[dict[str, str]] = []
+        page.on("request", lambda request: request.method == "PUT" and sent.append(request.headers))
+        picker = page.locator("input[type=file]")
+        body = os.urandom(BIG_FILE_BYTES)
+        page.goto(f"#/note/{note['id']}/edit")
+
+        # The browser sends the SHA-256; the server checks it and saves the file.
+        picker.set_input_files(files=[binary_file("data.bin", body)])
+        expect(page.locator(".toast")).to_contain_text("Uploaded data.bin, SHA-256 checked")
+        expect(page.locator(".attachment-rows li")).to_have_count(1)
+        assert sent[-1]["content-digest"] == content_digest(body)
+        assert (attachments / "data.bin").read_bytes() == body
+
+        # A file that does not match its SHA-256 is refused, and nothing is saved.
+        def wrong_digest(route: Route) -> None:
+            headers = route.request.all_headers()
+            headers["content-digest"] = content_digest(b"other bytes")
+            route.continue_(headers=headers)
+
+        page.route("**/attachments/damaged.bin", wrong_digest)
+        picker.set_input_files(files=[binary_file("damaged.bin", body)])
+        expect(page.locator(".toast.error")).to_contain_text("The file arrived damaged")
+        expect(page.locator(".upload-row")).to_have_count(0)
+
+        # Cancel while the SHA-256 is being computed: nothing is sent and no error appears.
+        page.evaluate(
+            """() => {
+            document.getElementById("toasts").replaceChildren();
+            const read = Blob.prototype.arrayBuffer;
+            Blob.prototype.arrayBuffer = function () {
+              return new Promise((done) => setTimeout(done, 400)).then(() => read.call(this));
+            };
+        }"""
+        )
+        uploads = len(sent)
+        picker.set_input_files(files=[binary_file("cancelled.bin", body)])
+        row = page.locator(".upload-row")
+        expect(row).to_contain_text("Computing SHA-256…")
+        row.get_by_role("button", name="Cancel").click()
+        expect(row).to_have_count(0)
+        page.wait_for_timeout(1500)  # Longer than the slowed-down hashing would take.
+        assert len(sent) == uploads
+        expect(page.locator(".toast.error")).to_have_count(0)
+
+        # A browser too old to compute the SHA-256 says so and sends nothing.
+        old = context.new_page()
+        old.add_init_script(OLD_BROWSER)
+        old_problems = watched(old)
+        old_requests: list[str] = []
+        old.on("request", lambda request: old_requests.append(request.method))
+        old.goto(f"#/note/{note['id']}/edit")
+        old.locator("input[type=file]").set_input_files(files=[binary_file("old.bin", body)])
+        expect(old.locator(".toast.error")).to_contain_text("Your browser is not supported")
+        expect(old.locator(".upload-row")).to_have_count(0)
+        assert "PUT" not in old_requests
+
+        assert sorted(path.name for path in attachments.iterdir()) == ["data.bin"]
+        assert_clean(old, old_problems)
         assert_clean(page, problems)
         context.close()
 

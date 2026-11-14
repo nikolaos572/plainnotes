@@ -20,6 +20,7 @@
   --space-4: 16px;
   --space-5: 24px;
   --radius: 6px;
+  --radius-card: 8px;
   --touch: 40px;
   --content-width: 920px;
 
@@ -123,12 +124,23 @@ h2 {
   list-style: none;
 }
 
+/* The notes list, search results and the trash: one bordered card, rows divided by lines */
+.note-list,
+.trash-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
 .note-row,
-.trash-list li,
-.attachments li {
-  padding: var(--space-3) 0;
+.trash-list li {
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
+}
+
+.note-row:last-child,
+.trash-list li:last-child {
+  border-bottom: 0;
 }
 
 .list-head,
@@ -196,7 +208,9 @@ h2 {
   color: var(--danger);
 }
 
-.button.small {
+/* Upload files is as small as the attachment buttons beside it. */
+.button.small,
+.attachments-panel > .button {
   min-height: 32px;
   padding: 2px var(--space-2);
   font-size: 0.875rem;
@@ -250,6 +264,8 @@ select {
 
 /* Header and menu */
 
+/* A tinted bar across the window; its contents line up with the page column (.main) below, whose
+   side padding is the last term of the max(). */
 .app-header {
   position: sticky;
   top: 0;
@@ -257,9 +273,14 @@ select {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+  padding-inline: max(var(--space-3), calc((100% - var(--content-width)) / 2 + var(--space-3)));
   border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.app-header .button:not(.primary) {
   background: var(--bg);
 }
 
@@ -399,6 +420,7 @@ select {
 .login-form h1 {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
 }
 
@@ -417,6 +439,14 @@ select {
 
 .note-sections > section + section {
   margin-top: var(--space-5);
+}
+
+/* "Pinned" and "Other notes": small labels above their cards */
+.note-sections h2 {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .note-link {
@@ -462,6 +492,15 @@ mark {
   font-size: 0.875rem;
   text-decoration: none;
   overflow-wrap: anywhere;
+}
+
+/* Tags page: more space between tags than between a tag and its count */
+.tag-list {
+  gap: var(--space-2) var(--space-4);
+}
+
+.tag-list li {
+  gap: var(--space-1);
 }
 
 .tag-list .tag {
@@ -539,8 +578,9 @@ mark {
   margin-top: var(--space-5);
 }
 
-.attachments li {
-  padding: var(--space-2) 0;
+.attachments > h2 {
+  margin-bottom: var(--space-2);
+  font-size: 1rem;
 }
 
 /* Rendered Markdown */
@@ -644,6 +684,13 @@ mark {
   font-weight: 600;
 }
 
+/* Phones: Wrap lines, Save and Close get a row of their own, spread across its width. Wider
+   screens put them beside the title. */
+.editor-actions {
+  flex: 1 1 100%;
+  justify-content: space-between;
+}
+
 .dirty-dot {
   font-size: 0.75em;
 }
@@ -652,6 +699,7 @@ mark {
   flex: 1;
   width: 100%;
   min-height: 50vh;
+  margin-top: var(--space-2); /* With the editor's gap: a little more room below the title row */
   padding: var(--space-3);
   font-size: 16px; /* At least 16px, or iOS zooms in on focus. */
   line-height: 1.5;
@@ -663,19 +711,69 @@ mark {
   outline: 2px dashed var(--accent);
 }
 
+/* Attachments (editor): a heading row with Upload files at its right end, then the file tiles */
 .attachments-panel {
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.attachments-panel > h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.attachments-panel > .button {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.attachments-panel > :not(h2, .button) {
+  grid-column: 1 / -1;
+}
+
+.attachments-panel > p {
+  margin: 0;
+}
+
+.attachment-rows:empty {
+  display: none;
+}
+
+/* File tiles, in the editor and the note view: as many columns as fit, at least 340px wide */
+.attachment-rows,
+.attachments ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: var(--space-2);
 }
 
 .attachment-rows li,
-.upload-row {
-  padding: var(--space-1) 0;
+.attachments li {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg-raised);
   overflow-wrap: anywhere;
 }
 
-.attachment-rows .name {
-  flex: 1 1 160px;
+/* Line 1: the file name, with its size at the right. Line 2: the buttons, Delete at the far right.
+   The name's basis leaves room for the size but not for a button, so the buttons always wrap. */
+.attachment-rows .name,
+.attachments li > a {
+  flex: 1 1 calc(100% - 96px);
+  font-weight: 600;
+}
+
+.attachment-rows .muted,
+.attachments li > .muted {
+  flex: none;
+}
+
+.attachment-rows .danger {
+  margin-left: auto;
 }
 
 .upload-row progress {
@@ -688,7 +786,7 @@ mark {
   width: min(480px, calc(100vw - 2 * var(--space-4)));
   padding: var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   background: var(--bg);
   color: var(--text);
   box-shadow: var(--shadow);
@@ -727,6 +825,7 @@ mark {
   background: var(--text);
   color: var(--bg);
   box-shadow: var(--shadow);
+  overflow-wrap: anywhere;
 }
 
 .toast.error {
@@ -752,18 +851,29 @@ mark {
 /* Wider screens */
 
 @media (min-width: 720px) {
+  /* The last term matches the side padding of .main at this width. */
+  .app-header {
+    padding-block: var(--space-3);
+    padding-inline: max(var(--space-4), calc((100% - var(--content-width)) / 2 + var(--space-4)));
+  }
+
   .search {
     order: 0;
     flex: 1 1 auto;
-    max-width: 420px;
+    max-width: 480px;
   }
 
   .main {
-    padding: var(--space-5) var(--space-4);
+    padding: var(--space-5) var(--space-4) calc(2 * var(--space-5));
   }
 
   h1 {
     font-size: 1.75rem;
+  }
+
+  .editor-actions {
+    flex: 0 1 auto;
+    justify-content: flex-start;
   }
 
   .editor-text {

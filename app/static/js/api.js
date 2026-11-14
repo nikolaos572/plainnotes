@@ -129,14 +129,19 @@ export const emptyTrash = (trashIds) =>
  * @param {Blob} file
  * @param {string} name requested file name (the server may change it)
  * @param {(fraction: number) => void} onProgress
+ * @param {Uint8Array|null} [sha256] the file's SHA-256, sent as a Content-Digest header (RFC 9530)
+ *   for servers that check uploads
  * @returns {{promise: Promise<Object>, abort: () => void}}
  */
-export function uploadAttachment(noteId, file, name, onProgress) {
+export function uploadAttachment(noteId, file, name, onProgress, sha256 = null) {
   const xhr = new XMLHttpRequest();
   const promise = new Promise((resolve, reject) => {
     xhr.open("PUT", attachmentUrl(noteId, name));
     xhr.setRequestHeader("X-Requested-With", "plainnotes");
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    if (sha256) {
+      xhr.setRequestHeader("Content-Digest", `sha-256=:${btoa(String.fromCharCode(...sha256))}:`);
+    }
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) onProgress(event.loaded / event.total);
     });

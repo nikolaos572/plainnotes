@@ -1,6 +1,8 @@
 """Attachments: name rules, streaming upload, limits, serving headers and deletion."""
 
+import base64
 import errno
+import hashlib
 import os
 import threading
 import tracemalloc
@@ -143,6 +145,19 @@ def test_names_are_sanitized_and_deduplicated(client: TestClient, note_id: str) 
     assert names == ["photo.png", "photo (1).png", "PHOTO (2).png", "b.txt", "file", "a_b.txt"]
 
 
+def test_too_long_names_are_shortened(client: TestClient, note_id: str, data_root: Path) -> None:
+    # The longest name Windows allows: 255 characters, 757 bytes here. Linux allows 255 bytes.
+    requested = "文" * 251 + ".txt"
+    bodies = [b"first", b"second"]
+    names = [upload(client, note_id, requested, body).json()["name"] for body in bodies]
+    assert names[0].endswith("文.txt")
+    assert names[1].endswith("文 (1).txt")
+    for name, body in zip(names, bodies, strict=True):
+        assert len(name.encode()) <= 255
+        assert (folder(data_root, note_id) / name).read_bytes() == body
+        assert client.get(f"/api/notes/{note_id}/attachments/{name}").content == body
+
+
 def test_upload_needs_an_existing_note(client: TestClient, note_id: str) -> None:
     assert upload(client, "20260101-000000-none", "x.txt").status_code == 404
     client.delete(f"/api/notes/{note_id}")
@@ -225,6 +240,157 @@ def test_disk_full(
     assert response.status_code == 507
     assert response.json()["code"] == "storage_full"
     assert list(folder(data_root, note_id).iterdir()) == []
+
+
+# --- SHA-256 check (PLAINNOTES_CHECK_ATTACHMENTS_HASH) --------------------------------
+
+
+def content_digest(body: bytes) -> str:
+    """A Content-Digest header value (RFC 9530) for body."""
+    return f"sha-256=:{base64.b64encode(hashlib.sha256(body).digest()).decode()}:"
+
+
+def upload_with_digest(
+    client: TestClient | httpx.Client,
+    note: str,
+    name: str,
+    body: bytes | Iterator[bytes],
+    digest: str | list[str] | None,
+) -> httpx.Response:
+    headers = [("Content-Type", "application/octet-stream")]
+    if digest is not None:
+        values = digest if isinstance(digest, list) else [digest]
+        headers += [("Content-Digest", value) for value in values]
+    return client.put(f"/api/notes/{note}/attachments/{name}", content=body, headers=headers)
+
+
+def files_in(data_root: Path, note: str) -> list[str]:
+    """Every file in the note's attachments folder, hidden temp files included."""
+    path = folder(data_root, note)
+    return sorted(p.name for p in path.iterdir()) if path.exists() else []
+
+
+@pytest.fixture
+def checking(app_factory: Callable) -> Iterator[TestClient]:
+    """A logged-in client of a server started with PLAINNOTES_CHECK_ATTACHMENTS_HASH=true."""
+    with TestClient(app_factory(check_attachments_hash=True), headers=CSRF) as client:
+        login(client)
+        yield client
+
+
+def new_note(client: TestClient | httpx.Client) -> str:
+    return client.post("/api/notes", json={"title": "Checked", "content": ""}).json()["id"]
+
+
+def test_session_tells_the_browser_whether_to_send_the_hash(
+    checking: TestClient, client: TestClient
+) -> None:
+    assert checking.get("/api/session").json()["check_attachments_hash"] is True
+    assert client.get("/api/session").json()["check_attachments_hash"] is False
+
+
+def test_matching_hash_is_saved(checking: TestClient, data_root: Path) -> None:
+    note = new_note(checking)
+    body = os.urandom(300_000)
+    response = upload_with_digest(checking, note, "data.bin", body, content_digest(body))
+    assert response.status_code == 201, response.text
+    assert (folder(data_root, note) / "data.bin").read_bytes() == body
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        # Other algorithms are ignored; sha-256 may come anywhere, with parameters, or in a
+        # repeated header field.
+        "sha-512=:AAAA:, sha-256=:{digest}:",
+        "sha-256=:{digest}:;origin=browser",
+        ["sha-512=:AAAA:", "sha-256=:{digest}:"],
+    ],
+)
+def test_digest_header_forms(
+    checking: TestClient, data_root: Path, header: str | list[str]
+) -> None:
+    note = new_note(checking)
+    digest = content_digest(b"payload").removeprefix("sha-256=:").removesuffix(":")
+    templates = [header] if isinstance(header, str) else header
+    values = [template.format(digest=digest) for template in templates]
+    response = upload_with_digest(checking, note, "ok.txt", b"payload", values)
+    assert response.status_code == 201, response.text
+    assert files_in(data_root, note) == ["ok.txt"]
+
+
+@pytest.mark.parametrize(
+    ("header", "code"),
+    [
+        (None, "digest_required"),
+        ("sha-512=:AAAA:", "digest_required"),
+        ("sha-256=:not base64!:", "invalid_digest"),
+        ("sha-256=:AAAA:", "invalid_digest"),  # Valid base64, but 3 bytes instead of 32.
+        ("sha-256=abc", "invalid_digest"),  # Not a byte sequence.
+        (content_digest(b"something else"), "digest_mismatch"),
+    ],
+)
+def test_upload_without_a_matching_hash_leaves_nothing(
+    checking: TestClient, data_root: Path, header: str | None, code: str
+) -> None:
+    note = new_note(checking)
+    response = upload_with_digest(checking, note, "data.bin", b"the real bytes", header)
+    assert response.status_code == 400
+    assert response.json()["code"] == code
+    assert files_in(data_root, note) == []
+
+
+def test_mismatch_is_logged_without_the_file_name(
+    checking: TestClient, data_root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    note = new_note(checking)
+    response = upload_with_digest(checking, note, "secret-name.bin", b"abc", content_digest(b"x"))
+    assert response.status_code == 400
+    log = caplog.text
+    assert f"Upload to note {note} failed the SHA-256 check after 3 bytes" in log
+    assert "secret-name" not in log
+
+
+def test_without_the_setting_digests_are_ignored(client: TestClient, data_root: Path) -> None:
+    note = new_note(client)
+    for header in [content_digest(b"something else"), "sha-256=:garbage:"]:
+        response = upload_with_digest(client, note, "kept.bin", b"bytes", header)
+        assert response.status_code == 201, response.text
+    assert files_in(data_root, note) == ["kept (1).bin", "kept.bin"]
+
+
+def test_streamed_upload_is_hashed_across_chunks(live_server: Callable, data_root: Path) -> None:
+    total = 5 * MB + 123
+    expected = content_digest(b"x" * total)
+    with live_client(live_server(check_attachments_hash=True)) as client:
+        note = new_note(client)
+        good = upload_with_digest(client, note, "ok.bin", chunks(total, 64 * 1024 + 1), expected)
+        assert good.status_code == 201, good.text
+        assert good.json()["size"] == total
+        bad = upload_with_digest(client, note, "bad.bin", chunks(total + 1), expected)
+        assert bad.status_code == 400
+        assert bad.json()["code"] == "digest_mismatch"
+    assert files_in(data_root, note) == ["ok.bin"]
+
+
+@pytest.mark.parametrize(
+    ("header", "error"),
+    [
+        ("", attachments.DigestRequired),
+        ("md5=:AAAA:", attachments.DigestRequired),
+        ("sha-256", attachments.InvalidDigest),
+        ("sha-256=:" + "A" * 43 + ":", attachments.InvalidDigest),  # Missing padding.
+    ],
+)
+def test_expected_sha256_errors(header: str, error: type[Exception]) -> None:
+    with pytest.raises(error):
+        attachments.expected_sha256(header)
+
+
+def test_expected_sha256_value() -> None:
+    digest = hashlib.sha256(b"abc").digest()
+    header = f"sha-256=:{base64.b64encode(digest).decode()}:"
+    assert attachments.expected_sha256(header) == digest
 
 
 @pytest.mark.parametrize(
