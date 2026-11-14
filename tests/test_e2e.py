@@ -637,6 +637,23 @@ def test_print_layout_shows_only_the_note(page: Page) -> None:
     expect(page.locator(".app-header")).to_be_visible()
 
 
+def test_upload_message_fits_a_phone_screen(page: Page) -> None:
+    # A name without spaces gives the message no place to wrap unless it may wrap anywhere.
+    name = "Screenshot_20261114_104533_com.android.chrome.jpg"
+    page.set_viewport_size({"width": 390, "height": 844})
+    note = create_note(page, unique("Long name"), "")
+    page.goto(f"#/note/{note['id']}/edit")
+    page.locator("input[type=file]").set_input_files(
+        files=[{"name": name, "mimeType": "image/jpeg", "buffer": b"jpeg"}]
+    )
+    toast = page.locator(".toast")
+    expect(toast).to_have_text(f"Uploaded {name}")
+    box = toast.bounding_box()
+    assert box is not None
+    assert box["x"] >= 0
+    assert box["x"] + box["width"] <= 390
+
+
 def test_upload_image_and_see_it_in_markdown(page: Page, server: Server, tmp_path: Path) -> None:
     note = create_note(page, unique("Picture"), "Screenshot:\n")
     image = tmp_path / "screen shot (1).png"

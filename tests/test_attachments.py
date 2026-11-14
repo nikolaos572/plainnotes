@@ -145,6 +145,19 @@ def test_names_are_sanitized_and_deduplicated(client: TestClient, note_id: str) 
     assert names == ["photo.png", "photo (1).png", "PHOTO (2).png", "b.txt", "file", "a_b.txt"]
 
 
+def test_too_long_names_are_shortened(client: TestClient, note_id: str, data_root: Path) -> None:
+    # The longest name Windows allows: 255 characters, 757 bytes here. Linux allows 255 bytes.
+    requested = "文" * 251 + ".txt"
+    bodies = [b"first", b"second"]
+    names = [upload(client, note_id, requested, body).json()["name"] for body in bodies]
+    assert names[0].endswith("文.txt")
+    assert names[1].endswith("文 (1).txt")
+    for name, body in zip(names, bodies, strict=True):
+        assert len(name.encode()) <= 255
+        assert (folder(data_root, note_id) / name).read_bytes() == body
+        assert client.get(f"/api/notes/{note_id}/attachments/{name}").content == body
+
+
 def test_upload_needs_an_existing_note(client: TestClient, note_id: str) -> None:
     assert upload(client, "20260101-000000-none", "x.txt").status_code == 404
     client.delete(f"/api/notes/{note_id}")
