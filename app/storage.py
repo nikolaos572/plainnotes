@@ -38,14 +38,23 @@ READ_ONLY_STORAGE = (
     "read-only. Check the disk and how it is mounted, then restart plainnotes. To serve a "
     "read-only copy on purpose, set PLAINNOTES_READ_ONLY=true."
 )
+CHECK_PASSED = (
+    "Storage check passed in {folder}: the filesystem supports RENAME_EXCHANGE (atomic saves) "
+    "and RENAME_NOREPLACE (new files never replace existing ones)."
+)
+CHECK_SKIPPED = (
+    "Storage check skipped: in read-only mode (PLAINNOTES_READ_ONLY) plainnotes writes nothing "
+    "to the data folder."
+)
 
 
 @dataclass(frozen=True)
 class Prepared:
-    """The outcome of prepare(): why saving is off (empty if it is on) and warnings to log."""
+    """The outcome of prepare(): why saving is off (empty if it is on) and messages to log."""
 
     read_only_reason: str = ""
     warnings: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)
 
 
 def notes_dir(data_dir: Path) -> Path:
@@ -125,7 +134,7 @@ def prepare(data_dir: Path, *, read_only: bool = False) -> Prepared:
                 raise PermissionError
         except OSError:
             raise ConfigError(f"PLAINNOTES_DATA_DIR: {notes_path} is not readable.") from None
-        return Prepared(warnings=warnings)
+        return Prepared(warnings=warnings, info=[CHECK_SKIPPED])
     try:
         _real_folder(notes_path, create=True)
         _real_folder(testing_path, create=True)
@@ -155,4 +164,4 @@ def prepare(data_dir: Path, *, read_only: bool = False) -> Prepared:
         )
     if missing:
         return Prepared(UNSUPPORTED_STORAGE.format(missing=", ".join(missing)), warnings)
-    return Prepared(warnings=warnings)
+    return Prepared(warnings=warnings, info=[CHECK_PASSED.format(folder=testing_path)])

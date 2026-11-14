@@ -29,12 +29,22 @@ def list_attachments(note_id: str, data_dir: DataDirDep) -> list[models.Attachme
 async def upload_attachment(
     note_id: str, filename: str, request: Request, data_dir: DataDirDep
 ) -> models.Attachment:
-    """Stream the raw body into a temp file, then give it a free final name."""
-    limit = request.app.state.settings.max_upload_mb * 1024 * 1024
+    """Stream the raw body into a temp file, then give it a free final name.
+
+    With PLAINNOTES_CHECK_ATTACHMENTS_HASH, the request must carry the file's SHA-256 in a
+    Content-Digest header, and the file is saved only if the bytes received match it.
+    """
+    settings = request.app.state.settings
+    limit = settings.max_upload_mb * 1024 * 1024
     declared = request.headers.get("content-length", "")
     if limit and declared.isascii() and declared.isdigit() and int(declared) > limit:
         raise attachments.UploadTooLarge
-    upload = await run_in_threadpool(attachments.Upload, data_dir, note_id)
+    expected = None
+    if settings.check_attachments_hash:
+        # Repeated header fields count as one comma-separated list (RFC 9110, section 5.3).
+        header = ", ".join(request.headers.getlist("content-digest"))
+        expected = attachments.expected_sha256(header)
+    upload = await run_in_threadpool(attachments.Upload, data_dir, note_id, expected)
     try:
         async for chunk in request.stream():
             if limit and upload.size + len(chunk) > limit:

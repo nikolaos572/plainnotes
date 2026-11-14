@@ -209,6 +209,7 @@ def test_login_success_and_session(anon: TestClient) -> None:
         "username": USERNAME,
         "read_only": False,
         "read_only_reason": "",
+        "check_attachments_hash": False,
     }
 
 

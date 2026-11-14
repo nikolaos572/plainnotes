@@ -825,6 +825,7 @@ mark {
   background: var(--text);
   color: var(--bg);
   box-shadow: var(--shadow);
+  overflow-wrap: anywhere;
 }
 
 .toast.error {

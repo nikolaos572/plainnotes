@@ -49,10 +49,11 @@ def logout(request: Request) -> Response:
 
 @router.get("/session", dependencies=PROTECTED)
 def session(request: Request) -> SessionInfo:
-    """The logged-in user and whether the server is read-only."""
+    """The logged-in user, whether the server is read-only and whether it checks uploads."""
     settings = request.app.state.settings
     return SessionInfo(
         username=settings.username,
         read_only=settings.read_only,
         read_only_reason=settings.read_only_reason,
+        check_attachments_hash=settings.check_attachments_hash,
     )

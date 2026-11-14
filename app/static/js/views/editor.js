@@ -6,6 +6,7 @@ import * as api from "../api.js";
 import { el, formatDate, formatSize } from "../dom.js";
 import * as drafts from "../drafts.js";
 import { icon } from "../icons.js";
+import { blobSha256, blobSha256Supported } from "../sha256.js";
 import { confirmAction, errorPage, showDialog, showError, toast } from "../ui.js";
 import { attachmentLink, wrapToggle } from "./note.js";
 
@@ -498,23 +499,55 @@ export async function editorView({ id, query }, app) {
   }
 
   async function uploadOne({ file, name }) {
+    // With PLAINNOTES_CHECK_ATTACHMENTS_HASH the server saves a file only if its SHA-256, which
+    // is computed here first, matches the bytes that arrive.
+    const check = app.session?.check_attachments_hash === true;
     const progress = el("progress", { max: "1", value: "0", "aria-label": `Uploading ${name}` });
-    const transfer = api.uploadAttachment(state.id, file, name, (fraction) => {
+    const status = check ? el("span", { class: "muted" }) : null;
+    const showProgress = (fraction) => {
       progress.value = fraction;
-    });
+    };
+    const cancelled = new AbortController();
+    let transfer = null;
     const cancel = el(
       "button",
-      { type: "button", class: "button small", on: { click: () => transfer.abort() } },
+      {
+        type: "button",
+        class: "button small",
+        on: {
+          click: () => {
+            cancelled.abort();
+            transfer?.abort();
+          },
+        },
+      },
       icon("x"),
       "Cancel",
     );
-    const row = el("li", { class: "upload-row" }, el("span", { class: "name" }, name), progress, cancel);
+    const row = el(
+      "li",
+      { class: "upload-row" },
+      el("span", { class: "name" }, name),
+      status,
+      progress,
+      cancel,
+    );
     uploadRows.append(row);
     try {
+      let sha256 = null;
+      if (check) {
+        status.textContent = "Computing SHA-256…";
+        progress.setAttribute("aria-label", `Computing the SHA-256 of ${name}`);
+        sha256 = await blobSha256(file, { signal: cancelled.signal, onProgress: showProgress });
+        status.textContent = "Uploading…";
+        progress.setAttribute("aria-label", `Uploading ${name}`);
+        progress.value = 0;
+      }
+      transfer = api.uploadAttachment(state.id, file, name, showProgress, sha256);
       const saved = await transfer.promise;
-      toast(`Uploaded ${saved.name}`);
+      toast(check ? `Uploaded ${saved.name}, SHA-256 checked` : `Uploaded ${saved.name}`);
     } catch (error) {
-      if (error.code !== "aborted") showError(error);
+      if (!cancelled.signal.aborted) showError(error);
     } finally {
       row.remove();
     }
@@ -524,6 +557,14 @@ export async function editorView({ id, query }, app) {
   async function enqueue(items) {
     if (!state.id) {
       toast("Save the note to add attachments", "error");
+      return;
+    }
+    if (app.session?.check_attachments_hash === true && !blobSha256Supported) {
+      toast(
+        "Your browser is not supported: it is too old to compute the SHA-256 that this server " +
+          "checks on every upload. Update your browser to upload files.",
+        "error",
+      );
       return;
     }
     uploads.push(...items);

@@ -37,6 +37,7 @@ FORBIDDEN_JS = {
 def test_js_files_exist() -> None:
     names = {path.relative_to(STATIC / "js").as_posix() for path in JS_FILES}
     assert {"theme.js", "main.js", "api.js", "dom.js", "icons.js", "ui.js", "markdown.js"} <= names
+    assert "sha256.js" in names
     assert {"views/list.js", "views/note.js", "views/editor.js", "views/login.js"} <= names
 
 
