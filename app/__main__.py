@@ -15,9 +15,24 @@ from app.main import create_app
 logger = logging.getLogger("app")
 
 
+class LogFormatter(logging.Formatter):
+    """Show Uvicorn's server log as "uvicorn" instead of "uvicorn.error".
+
+    Uvicorn sends all its own messages, routine ones such as "Started server process" included,
+    to a logger named "uvicorn.error", after Gunicorn's error log. In this log format that made a
+    healthy start look like a list of errors; the level still marks real errors. The record is
+    copied, not changed, so other handlers still see the real logger name.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.name == "uvicorn.error":
+            record = logging.makeLogRecord({**record.__dict__, "name": "uvicorn"})
+        return super().format(record)
+
+
 def configure_logging(level: str) -> None:
     """Log to stdout with UTC timestamps."""
-    formatter = logging.Formatter(
+    formatter = LogFormatter(
         "%(asctime)s %(levelname)s %(name)s: %(message)s", "%Y-%m-%dT%H:%M:%SZ"
     )
     formatter.converter = time.gmtime

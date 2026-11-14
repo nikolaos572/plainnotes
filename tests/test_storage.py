@@ -291,3 +291,19 @@ def test_startup_on_supported_storage_allows_saving(server_start, tmp_path):
         created = client.post("/api/notes", json={"title": "Saved", "content": "x"})
         assert created.status_code == 201
     assert (tmp_path / "notes" / created.json()["id"] / "Saved.md").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize(
+    ("level", "message"),
+    [(logging.INFO, "Application startup complete."), (logging.ERROR, "Exception in ASGI app")],
+)
+def test_uvicorn_server_log_is_not_labelled_error(server_start, level, message):
+    server_start()
+    # The handler main() installed. Format a record directly: other tests run uvicorn with its
+    # own logging config, which stops "uvicorn.*" records from reaching the root logger.
+    handler = logging.getLogger().handlers[0]
+    record = logging.LogRecord("uvicorn.error", level, __file__, 1, message, (), None)
+    line = handler.format(record)
+    assert line.endswith(f" {logging.getLevelName(level)} uvicorn: {message}")
+    # Only the printed name changes: other handlers still see the real logger name.
+    assert record.name == "uvicorn.error"
