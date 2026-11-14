@@ -40,7 +40,9 @@ def unsupported(flag: int, code: int = errno.EINVAL):
 
 def test_fresh_data_folder_gets_notes_and_testing(tmp_path):
     prepared = storage.prepare(tmp_path)
-    assert prepared == storage.Prepared()
+    passed = storage.CHECK_PASSED.format(folder=tmp_path / "testing")
+    assert prepared == storage.Prepared(info=[passed])
+    assert "RENAME_EXCHANGE" in passed and "RENAME_NOREPLACE" in passed
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notes", "testing"]
     assert list((tmp_path / "notes").iterdir()) == list((tmp_path / "testing").iterdir()) == []
 
@@ -132,7 +134,8 @@ def test_read_only_creates_empties_and_probes_nothing(tmp_path, monkeypatch):
     (tmp_path / "testing").mkdir()
     (tmp_path / "testing" / "leftover").write_bytes(b"kept")
     before = snapshot(tmp_path)
-    assert storage.prepare(tmp_path, read_only=True) == storage.Prepared()
+    skipped = storage.Prepared(info=[storage.CHECK_SKIPPED])
+    assert storage.prepare(tmp_path, read_only=True) == skipped
     assert snapshot(tmp_path) == before
 
 
@@ -266,6 +269,7 @@ def test_startup_on_unsupported_storage_serves_read_only(server_start, monkeypat
     reason = app.state.settings.read_only_reason
     assert reason.startswith("Saving is turned off") and "(RENAME_EXCHANGE)" in reason
     assert f"ERROR app: {reason}" in log
+    assert "Storage check passed" not in log
     (tmp_path / "notes" / "Loose.md").write_bytes(b"not imported in read-only mode")
     with TestClient(app, headers=CSRF) as client:
         login(client)
@@ -285,6 +289,8 @@ def test_startup_on_supported_storage_allows_saving(server_start, tmp_path):
     app, log = server_start()
     assert app.state.settings.read_only is False
     assert "Saving is turned off" not in log
+    passed = storage.CHECK_PASSED.format(folder=tmp_path / "testing")
+    assert f"INFO app: {passed}\n" in log
     with TestClient(app, headers=CSRF) as client:
         login(client)
         assert client.get("/api/session").json()["read_only_reason"] == ""

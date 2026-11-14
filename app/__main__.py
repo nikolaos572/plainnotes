@@ -52,6 +52,8 @@ def main() -> None:
         settings.base_path or "/",
         settings.read_only,
     )
+    for message in prepared.info:
+        logger.info("%s", message)
     uvicorn.run(
         create_app(settings),
         host=settings.host,

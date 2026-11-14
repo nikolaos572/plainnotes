@@ -40,6 +40,14 @@ The container runs as UID:GID 61001:61001, not root. That number is above the ra
 
 At every start plainnotes creates `notes/` and `testing/` in the data folder if they are missing, empties `testing/`, and checks there that the storage supports the atomic file operations safe saving needs. Local Linux filesystems such as ext4, XFS, btrfs and ZFS (OpenZFS 2.2 or later) do. If the storage does not (as with NFS or SMB shares, or ZFS 2.1 and older), plainnotes still starts, but read-only, and shows why on every page. It does the same when the disk is full or read-only at startup. Mount the whole data folder at once, so that the check runs on the same storage as your notes.
 
+When the check passes, the log says so:
+
+```text
+INFO app: Storage check passed in /data/testing: the filesystem supports RENAME_EXCHANGE (atomic saves) and RENAME_NOREPLACE (new files never replace existing ones).
+```
+
+With `PLAINNOTES_READ_ONLY=true` nothing is written to the data folder, so the check does not run, and the log says it was skipped.
+
 ## Running behind HTTPS
 
 For use beyond a local test, put plainnotes behind a reverse proxy that provides HTTPS. The command in the [README](../README.md#run-it) is meant for this. The example here uses Nginx Proxy Manager (NPM), with both containers on Docker's default bridge network. What the command's options do:
