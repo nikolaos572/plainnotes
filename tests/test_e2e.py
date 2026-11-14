@@ -658,6 +658,82 @@ def test_upload_image_and_see_it_in_markdown(page: Page, server: Server, tmp_pat
     expect(image_element).to_have_js_property("naturalWidth", 24)
 
 
+# --- layout ---------------------------------------------------------------------------
+
+
+def box(locator: Locator) -> dict[str, float]:
+    found = locator.bounding_box()
+    assert found is not None, locator
+    return found
+
+
+def right(found: dict[str, float]) -> float:
+    return found["x"] + found["width"]
+
+
+def bottom(found: dict[str, float]) -> float:
+    return found["y"] + found["height"]
+
+
+def middle(found: dict[str, float]) -> float:
+    return found["y"] + found["height"] / 2
+
+
+@pytest.mark.parametrize("width", [1680, 1000, 390])
+def test_header_lines_up_with_the_page_column(page: Page, width: int) -> None:
+    create_note(page, unique("Column"), "")
+    page.set_viewport_size({"width": width, "height": 800})
+    page.goto("#/")
+    notes = box(page.locator(".note-list").first)
+    assert box(page.locator(".brand"))["x"] == pytest.approx(notes["x"], abs=1)
+    assert right(box(page.locator(".menu > summary"))) == pytest.approx(right(notes), abs=1)
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_editor_spacing_and_button_row(page: Page, width: int) -> None:
+    note = create_note(page, unique("Layout"), "text\n")
+    page.set_viewport_size({"width": width, "height": 844})
+    page.goto(f"#/note/{note['id']}/edit")
+    title = box(page.locator("#note-title"))
+    text = box(page.get_by_label("Note text"))
+    panel = box(page.locator(".attachments-panel"))
+    # A little room between the title row and the text, and between the text and the attachments.
+    assert text["y"] - bottom(box(page.locator(".editor-bar"))) == pytest.approx(16, abs=1)
+    assert panel["y"] - bottom(text) == pytest.approx(24, abs=1)
+    # Wrap lines, Save and Close: one row that ends at the right edge of the text.
+    row = [
+        box(page.locator(".editor-actions .check")),
+        box(page.get_by_role("button", name="Save", exact=True)),
+        box(page.get_by_role("button", name="Close", exact=True)),
+    ]
+    assert all(middle(found) == pytest.approx(middle(row[0]), abs=1) for found in row)
+    assert right(row[-1]) == pytest.approx(right(text), abs=1)
+    if width >= 720:
+        assert middle(row[0]) == pytest.approx(middle(title), abs=1)
+    else:
+        # Phones: a row of its own below the title, spread evenly across the full width.
+        assert row[0]["y"] > bottom(title)
+        assert row[0]["x"] == pytest.approx(title["x"], abs=1)
+        gaps = [row[1]["x"] - right(row[0]), row[2]["x"] - right(row[1])]
+        assert gaps[0] == pytest.approx(gaps[1], abs=1)
+
+
+def test_login_title_is_centred(context: BrowserContext) -> None:
+    page = context.new_page()
+    page.goto("#/login")
+    margins = page.locator(".login-form h1").evaluate(
+        """(heading) => {
+        const range = document.createRange();
+        range.selectNodeContents(heading);
+        const content = range.getBoundingClientRect();
+        const outer = heading.getBoundingClientRect();
+        return [content.left - outer.left, outer.right - content.right];
+    }"""
+    )
+    assert margins[0] > 0
+    assert margins[0] == pytest.approx(margins[1], abs=1)
+
+
 # --- button icons ---------------------------------------------------------------------
 
 
