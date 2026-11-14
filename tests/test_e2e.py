@@ -698,7 +698,7 @@ def middle(found: dict[str, float]) -> float:
     return found["y"] + found["height"] / 2
 
 
-@pytest.mark.parametrize("width", [1680, 1000, 390])
+@pytest.mark.parametrize("width", [1680, 1000, 390, 320])
 def test_header_lines_up_with_the_page_column(page: Page, width: int) -> None:
     create_note(page, unique("Column"), "")
     page.set_viewport_size({"width": width, "height": 800})
@@ -706,6 +706,27 @@ def test_header_lines_up_with_the_page_column(page: Page, width: int) -> None:
     notes = box(page.locator(".note-list").first)
     assert box(page.locator(".brand"))["x"] == pytest.approx(notes["x"], abs=1)
     assert right(box(page.locator(".menu > summary"))) == pytest.approx(right(notes), abs=1)
+
+
+def test_brand_name_gives_way_to_the_header_buttons(page: Page) -> None:
+    # At 320px no font leaves room for the name beside New note and Menu. The buttons must not
+    # wrap to a second row: the name goes, whole, and the logo stays.
+    page.set_viewport_size({"width": 320, "height": 800})
+    page.goto("#/")
+    buttons = [box(page.locator(".app-header > .button")), box(page.locator(".menu > summary"))]
+    assert middle(buttons[0]) == pytest.approx(middle(buttons[1]), abs=1)
+    brand = box(page.locator(".brand"))
+    logo = box(page.locator(".brand-logo"))
+    assert logo["x"] == pytest.approx(brand["x"], abs=1)
+    assert middle(logo) == pytest.approx(middle(buttons[0]), abs=1)
+    name_top = page.locator(".brand").evaluate(
+        """(brand) => {
+        const range = document.createRange();
+        range.selectNodeContents(brand.lastChild);
+        return range.getBoundingClientRect().top;
+    }"""
+    )
+    assert name_top >= bottom(brand)
 
 
 @pytest.mark.parametrize("width", [1280, 390])
