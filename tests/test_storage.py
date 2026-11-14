@@ -277,6 +277,7 @@ def test_startup_on_unsupported_storage_serves_read_only(server_start, monkeypat
             "username": USERNAME,
             "read_only": True,
             "read_only_reason": reason,
+            "check_attachments_hash": False,
         }
         assert client.get("/api/notes").json() == []
         created = client.post("/api/notes", json={"title": "Blocked", "content": ""})
@@ -289,6 +290,7 @@ def test_startup_on_supported_storage_allows_saving(server_start, tmp_path):
     app, log = server_start()
     assert app.state.settings.read_only is False
     assert "Saving is turned off" not in log
+    assert "read-only False, check attachments hash False\n" in log
     passed = storage.CHECK_PASSED.format(folder=tmp_path / "testing")
     assert f"INFO app: {passed}\n" in log
     with TestClient(app, headers=CSRF) as client:

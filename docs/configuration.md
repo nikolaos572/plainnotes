@@ -18,6 +18,7 @@ Everything is configured with environment variables. An invalid value stops the 
 | `PLAINNOTES_COOKIE_SECURE` | `true` | Set to `false` only for testing over plain HTTP |
 | `PLAINNOTES_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` header is trusted: comma-separated IP addresses or networks, such as `172.17.0.0/16` for a proxy in Docker on the same server; see [Running behind HTTPS](#running-behind-https) |
 | `PLAINNOTES_MAX_UPLOAD_MB` | `0` | Largest upload in MiB; `0` means unlimited |
+| `PLAINNOTES_CHECK_ATTACHMENTS_HASH` | `false` | Set to `true` to check every attachment upload against its SHA-256: the browser computes it, and the server saves the file only if the bytes it receives match. Off by default, when no hash is computed or checked; see [Checking uploads with SHA-256](#checking-uploads-with-sha-256) |
 | `PLAINNOTES_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `PLAINNOTES_READ_ONLY` | `false` | Serve notes without allowing any change |
 | `PLAINNOTES_BASE_PATH` | empty | Serve under a sub-path, e.g. `/notes` (starts with `/`, no trailing `/`); see [Hosting under a sub-path](#hosting-under-a-sub-path) |
@@ -75,6 +76,23 @@ Port 8080 on the server also answers over plain HTTP, but browsers cannot log in
 ### Hosting under a sub-path
 
 To host plainnotes under a sub-path such as `https://example.com/notes/`, set `PLAINNOTES_BASE_PATH=/notes` and add a **Custom location** `/notes` in the NPM proxy host that forwards to the same address and port without stripping the prefix (the same Advanced settings apply).
+
+## Checking uploads with SHA-256
+
+**By default (`PLAINNOTES_CHECK_ATTACHMENTS_HASH=false`), uploads are not hashed.** They are still protected against the usual failures: HTTPS refuses data that was changed on the way, and an upload that is cut off is never saved, because plainnotes writes every upload to a hidden temporary file and gives it its name only after all its bytes have arrived.
+
+Set `PLAINNOTES_CHECK_ATTACHMENTS_HASH=true` to add an end-to-end check on top of that:
+
+1. Before uploading a file, the browser computes its SHA-256. The upload shows **Computing SHA-256…**, then **Uploading…**.
+2. The browser sends the hash with the upload, in a `Content-Digest` header ([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530)).
+3. The server computes the SHA-256 of the bytes as they arrive and saves the file only if the two match. The message after the upload ends in **SHA-256 checked**.
+4. If they do not match, the temporary file is deleted and nothing is saved. The editor says "The file arrived damaged" and the log records a warning; upload the file again.
+
+The cost is on the computer that uploads: the browser reads each file twice, once to hash it and once to send it, and the upload starts only when the hash is ready. Memory use stays small whatever the file size. In Chromium on a modest server CPU, hashing ran at about 50 MB per second, which is about 2 seconds for a 100 MB file and 20 seconds for 1 GB; Firefox took about twice as long. Recent desktops and laptops are usually faster. On the server the check costs next to nothing.
+
+With the setting on, every upload must carry the hash; one without it is refused (`digest_required`). A browser tab opened before you turned the setting on must be reloaded first. Browsers from before 2022 (Chrome and Edge older than version 100, Firefox older than 97, Safari older than 15.4) cannot compute the hash, so with the setting on they show "Your browser is not supported" instead of uploading. A script that uploads through the API sends the header itself, for example `Content-Digest: sha-256=:<hash>:` with the hash from `openssl dgst -sha256 -binary <file> | base64`.
+
+The startup log shows the setting: `... read-only False, check attachments hash True`.
 
 ## Troubleshooting
 

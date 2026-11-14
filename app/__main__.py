@@ -44,13 +44,15 @@ def main() -> None:
         logger.error("%s", prepared.read_only_reason)
         settings = replace(settings, read_only=True, read_only_reason=prepared.read_only_reason)
     logger.info(
-        "plainnotes %s: data folder %s, listening on %s:%d, base path %r, read-only %s",
+        "plainnotes %s: data folder %s, listening on %s:%d, base path %r, read-only %s, "
+        "check attachments hash %s",
         __version__,
         settings.data_dir,
         settings.host,
         settings.port,
         settings.base_path or "/",
         settings.read_only,
+        settings.check_attachments_hash,
     )
     for message in prepared.info:
         logger.info("%s", message)

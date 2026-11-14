@@ -75,6 +75,23 @@ SERVICE_ERRORS: dict[type[Exception], tuple[int, str, str]] = {
     search.BadQuery: (400, "bad_query", "The search query is not valid."),
     trash.IdExists: (409, "id_exists", "A note with the same ID already exists."),
     attachments.UploadTooLarge: (413, "too_large", "The file is larger than the upload limit."),
+    attachments.DigestRequired: (
+        400,
+        "digest_required",
+        "This server checks every upload against its SHA-256, but none was sent. "
+        "Reload the page and upload the file again.",
+    ),
+    attachments.InvalidDigest: (
+        400,
+        "invalid_digest",
+        "The upload's Content-Digest header does not hold a valid SHA-256.",
+    ),
+    attachments.DigestMismatch: (
+        400,
+        "digest_mismatch",
+        "The file arrived damaged: its SHA-256 does not match the one sent with it. "
+        "It was not saved; upload it again.",
+    ),
     fsutil.StorageFull: (507, "storage_full", "The disk is full."),
 }
 _HTTP_CODES = {400: "bad_request", 404: "not_found", 405: "method_not_allowed", 413: "too_large"}

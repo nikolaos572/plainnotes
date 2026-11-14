@@ -38,11 +38,16 @@ class TrashEmpty(BaseModel):
 
 
 class SessionInfo(BaseModel):
-    """GET /api/session response; read_only_reason explains a read-only mode the server chose."""
+    """GET /api/session response.
+
+    read_only_reason explains a read-only mode the server chose; check_attachments_hash tells the
+    browser to send each upload's SHA-256.
+    """
 
     username: str
     read_only: bool
     read_only_reason: str = ""
+    check_attachments_hash: bool = False
 
 
 class Attachment(BaseModel):

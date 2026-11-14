@@ -30,6 +30,7 @@ def test_defaults() -> None:
     assert settings.cookie_secure is True
     assert settings.forwarded_allow_ips == "127.0.0.1"
     assert settings.max_upload_mb == 0
+    assert settings.check_attachments_hash is False
     assert settings.log_level == "INFO"
     assert settings.read_only is False
     assert settings.base_path == ""
@@ -44,6 +45,7 @@ def test_all_values_parsed() -> None:
         COOKIE_SECURE="no",
         FORWARDED_ALLOW_IPS="*",
         MAX_UPLOAD_MB="100",
+        CHECK_ATTACHMENTS_HASH="true",
         LOG_LEVEL="debug",
         READ_ONLY="YES",
         BASE_PATH="/notes",
@@ -53,6 +55,7 @@ def test_all_values_parsed() -> None:
     assert settings.cookie_secure is False
     assert settings.forwarded_allow_ips == "*"
     assert settings.max_upload_mb == 100
+    assert settings.check_attachments_hash is True
     assert settings.log_level == "DEBUG"
     assert settings.read_only is True
     assert settings.base_path == "/notes"
@@ -89,6 +92,7 @@ def test_secret_key_length() -> None:
         ("MAX_UPLOAD_MB", "lots"),
         ("COOKIE_SECURE", "maybe"),
         ("READ_ONLY", "on"),
+        ("CHECK_ATTACHMENTS_HASH", "enabled"),
         ("LOG_LEVEL", "TRACE"),
         ("BASE_PATH", "notes"),
         ("BASE_PATH", "/notes/"),
@@ -119,6 +123,7 @@ def test_invalid_values(name: str, value: str) -> None:
 def test_boolean_parsing(value: str, expected: bool) -> None:
     assert load(COOKIE_SECURE=value).cookie_secure is expected
     assert load(READ_ONLY=value).read_only is expected
+    assert load(CHECK_ATTACHMENTS_HASH=value).check_attachments_hash is expected
 
 
 def test_valid_base_paths() -> None:

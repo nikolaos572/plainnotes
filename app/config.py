@@ -31,6 +31,8 @@ class Settings:
     cookie_secure: bool = True
     forwarded_allow_ips: str = "127.0.0.1"
     max_upload_mb: int = 0
+    # Uploads must carry their SHA-256, and are saved only if the received bytes match it.
+    check_attachments_hash: bool = False
     log_level: str = "INFO"
     read_only: bool = False
     base_path: str = ""
@@ -71,6 +73,11 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         forwarded_allow_ips=optional("FORWARDED_ALLOW_IPS") or defaults.forwarded_allow_ips,
         max_upload_mb=_integer(
             optional("MAX_UPLOAD_MB"), "MAX_UPLOAD_MB", defaults.max_upload_mb, 0, None
+        ),
+        check_attachments_hash=_boolean(
+            optional("CHECK_ATTACHMENTS_HASH"),
+            "CHECK_ATTACHMENTS_HASH",
+            defaults.check_attachments_hash,
         ),
         log_level=_log_level(optional("LOG_LEVEL")),
         read_only=_boolean(optional("READ_ONLY"), "READ_ONLY", defaults.read_only),
